@@ -2,7 +2,7 @@
 
 An agent-facing TypeScript CLI that runs pinned kubectl with an isolated identity.
 The standalone package implements B1.1 and the bounded reads and generated command policy in B2.1 and B2.2.
-The opt-in B1.2 verification journey exercises these reads through a frozen local Artium fixture.
+The opt-in B1.2 verification journey exercises version and pod reads through a frozen local Artium fixture.
 The Linux portion of B1.3 is covered; native Windows execution and ACL conformance remain pending.
 Complete command coverage and live commissioning remain later tasks.
 
@@ -53,7 +53,7 @@ Linux verification also requires `unshare` and `ip` with permission to create a 
 Python and OpenSSL are verification prerequisites, not product runtime dependencies.
 No reference implementation code was copied.
 
-Before installation, place the official binaries listed in kubectl-pins.json in `vendor/` using its recorded filenames.
+For offline source builds, place the official binaries listed in kubectl-pins.json in `vendor/` using its recorded filenames before dependency installation.
 Verify each against the official published URL plus `.sha256`.
 The build checks both digests and downloads a missing binary only from its pinned official URL, verifying SHA256 before writing; pre-provision both binaries for offline builds and tests, which remain under outbound deny with no PATH fallback.
 Dependency installation uses the npm registry; Kubernetes verification stays local.
@@ -67,6 +67,7 @@ python3 scripts/verify.py task B2.2 --mode offline --pack evidence
 ```
 
 Verification packs the product, installs that tarball into an isolated temporary prefix, and executes its public CLI.
+The B1 verifier uses `--prefer-offline` for npm pack and install; populate the dependency cache before running inside the network namespace.
 Only the external Kubernetes API is fake.
 It uses a verified TLS loopback server, two synthetic token identities and a synthetic client certificate.
 Discovery responses are synthetic; see [evidence/README.md](evidence/README.md) for retained response provenance and the fixture integrity source.
