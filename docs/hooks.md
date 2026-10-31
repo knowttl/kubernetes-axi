@@ -1,0 +1,16 @@
+# Optional session guidance
+
+Read Kubernetes resources using isolated credentials and pinned kubectl v1.32.2.
+Use --profile <name> to select an AXI identity.
+Use native -- <kubectl arguments> for native output; native --profile is upstream profiling and is blocked because it writes files.
+Reads are bounded; inspect complete, truncated and continue before treating output as complete.
+Writes, execution, transfers, connections, credential overrides and streaming require later capability support and are refused.
+Not yet supported (staged): diff requires the later file and external-helper execution capability. Native exit meanings remain 0 for no differences, 1 for differences, and greater than 1 for failure.
+Run kubernetes-axi --help for available compact reads and kubernetes-axi native -- <command> --help for generated upstream flags.
+
+Install a session hook only with explicit user opt-in.
+Claude Code and Codex SessionStart hooks can run `kubernetes-axi` for the bounded home view.
+OpenCode can inject the same home view through a user-managed plugin.
+Use a PATH-verified binary or the absolute installed executable path.
+No hook is installed by package installation, CLI reads or tests.
+The installable skill is an alternative when session hooks are unavailable.

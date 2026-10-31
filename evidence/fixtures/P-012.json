@@ -1,0 +1,20 @@
+{
+  "status": 404,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "kind": "Status",
+    "apiVersion": "v1",
+    "metadata": {},
+    "status": "Failure",
+    "message": "pods \"axi-design-nonexistent-probe\" not found",
+    "reason": "NotFound",
+    "details": {
+      "name": "axi-design-nonexistent-probe",
+      "kind": "pods"
+    },
+    "code": 404
+  },
+  "sanitization": "Resource identities, IP addresses, UUIDs and continuation values replaced consistently. Annotation values, command arguments and literal environment values removed. JSON keys and scalar types retained."
+}

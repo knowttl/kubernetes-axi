@@ -1,0 +1,8 @@
+{
+  "status": 404,
+  "headers": {
+    "Content-Type": "text/plain; charset=utf-8"
+  },
+  "body": "404 page not found\n",
+  "sanitization": "Resource identities, IP addresses, UUIDs and continuation values replaced consistently. Annotation values, command arguments and literal environment values removed. JSON keys and scalar types retained."
+}

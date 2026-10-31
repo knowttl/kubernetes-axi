@@ -73,6 +73,19 @@ class Results(unittest.TextTestResult):
 
 def run(args):
     pack = args.pack.resolve()
+    if args.command == "task" and args.target in ("B2.1", "B2.2"):
+        if args.artium is not None:
+            revision = subprocess.run(
+                ["git", "-C", str(args.artium.resolve()), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            print(json.dumps({"artiumRevision": revision, "outcome": "pending", "prerequisite": "Artium B2 reads require the separate stage-1 gate; this run verifies only the standalone package."}), flush=True)
+        result = subprocess.run(
+            ["unshare", "--user", "--map-root-user", "--net", "--", "sh", "-c",
+             'ip link set lo up && exec node "$1" --pack "$2"', "verify-b2", str(ROOT / "test/b2.ts"), str(pack)],
+            cwd=ROOT, timeout=180,
+        )
+        return result.returncode
     for relative, expected in HASHES.items():
         actual = hashlib.sha256((pack / relative).read_bytes()).hexdigest()
         if actual != expected:

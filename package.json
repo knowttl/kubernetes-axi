@@ -8,12 +8,14 @@
   "packageManager": "npm@11.9.0",
   "publishConfig": { "access": "public" },
   "bin": { "kubernetes-axi": "bin/kubernetes-axi.js" },
-  "files": ["bin", "dist", "vendor", "third-party", "THIRD_PARTY_NOTICES.md", "axi-credential.schema.json", "kubectl-pins.json"],
+  "files": ["bin", "dist", "vendor", "third-party", "THIRD_PARTY_NOTICES.md", "axi-credential.schema.json", "kubectl-pins.json", "command-metadata.json", "skills", "docs/hooks.md"],
   "scripts": {
     "prepare": "npm run build",
     "build": "node scripts/check-binaries.mjs && tsc",
-    "lint": "tsc --noEmit",
-    "test": "python3 scripts/verify.py task B1.1 --mode offline --pack evidence",
+    "lint": "tsc --noEmit && tsc -p tsconfig.tools.json",
+    "test": "unshare --user --map-root-user --net -- sh -c 'ip link set lo up && GOPROXY=off node scripts/generate-metadata.ts --check && python3 scripts/verify.py task B1.1 --mode offline --pack evidence && node test/b2.ts'",
+    "generate:metadata": "node scripts/generate-metadata.ts",
+    "check:metadata": "GOPROXY=off node scripts/generate-metadata.ts --check",
     "check": "npm run lint && npm test"
   },
   "dependencies": { "@toon-format/toon": "4.4.0", "ajv": "8.17.1" },

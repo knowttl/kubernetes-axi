@@ -17,4 +17,4 @@ Tests are never required first; a change is verified end to end against the beha
 Exempt: validation-boundary tests, contract tests against an agreed schema or recording, and regression tests that cite the bug they reproduce.
 <!-- END canonical test-quality rules -->
 
-The build is offline: tests use a controlled fake Kubernetes API only and never call a real cluster or use real credentials.
+See [Build and verification](README.md#build-and-verification) for build prerequisites and offline verification requirements.
