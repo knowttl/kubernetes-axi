@@ -14,7 +14,7 @@ kubernetes-axi logs <pod> -n <namespace>
 kubernetes-axi native -- get pods -n <namespace> -o json
 ```
 
-Output is TOON.
+Compact output defaults to TOON.
 Use `--help` for the current command surface, or `--version` for the package version without loading the command graph.
 Running without arguments shows the selected source, isolated context, namespace, compatible binary and a bounded live pod summary.
 Compact reads discover resource names, aliases, scope and kinds dynamically, including custom resources.
@@ -29,6 +29,8 @@ Errors retain the upstream status where available.
 Each operation has a 15-second budget, at most 64 child invocations, a 5-second default request timeout, a 10-second child limit and a 4 MiB retained-output limit.
 Logs preserve text and default to 100 trailing lines and 65,536 bytes; a bounded log snapshot never claims completeness.
 Use `get <resource> [name] -o json` for compact JSON, or the native route for upstream presentation and ordered arguments.
+Compact JSON serializes the same bounded summary and provenance as TOON; it does not return the upstream Kubernetes object.
+Compact `describe` and `explain` wrap upstream text with provenance and `complete: false`; use the native route for unwrapped text.
 Native stdout, stderr and exit status are preserved after redaction, with the same time and byte bounds.
 Native `kubectl get pods` consumes continuation tokens even when chunking is disabled, so the bounded read retains the original page state explicitly.
 
@@ -74,7 +76,8 @@ The verification report records individual cases, native OS, package digest, fix
 `--artium <checkout>` optionally records that checkout's revision; it does not claim Artium verification.
 The `gate 1` and `release` entry points report the remaining prerequisites as pending and exit 2, even after B1.1 passes.
 Pending never counts as pass.
-Missing npm or OpenSSL also report pending and exit 2; integrity mismatches remain failures and exit 1.
+The B1.1 verifier reports missing npm or OpenSSL as pending and exits 2; integrity mismatches remain failures and exit 1.
+Both B2 task commands run the combined B2.1/B2.2 harness, which requires Linux network namespaces, npm, OpenSSL and cached npm dependencies; missing prerequisites fail the run.
 
 ```text
 python3 scripts/verify.py task B1.1 --mode offline --pack evidence --negative-control
@@ -96,7 +99,7 @@ The workflow uses GitHub OIDC without an npm token.
 ## Generated grammar and staged capabilities
 
 [command-metadata.json](command-metadata.json) is extracted from the pinned `k8s.io/kubectl@v0.32.2` Cobra command tree and its logging registration.
-It includes 109 entries: the 106 baseline command paths plus the root, hidden alpha group and default help command.
+It includes the root, hidden alpha group and default help command alongside the built-in command paths.
 Every entry includes inherited flags, short aliases, actual pflag types and an effect classification.
 [effect-policy.json](effect-policy.json) classifies every exact command path and flag name; generation refuses new, unclassified entries.
 The checked-in module checksum lock verifies public upstream dependencies.
@@ -108,7 +111,7 @@ npm run generate:metadata
 npm run check:metadata
 ```
 
-Generation requires Go 1.23.5 and the pinned public module dependencies, which may be fetched during setup.
+Generation requires Go and the pinned public module dependencies, which may be fetched during setup.
 `check:metadata` uses the populated module cache with GOPROXY disabled and checks generated metadata, skill and optional hook guidance.
 `npm test` runs this freshness check under outbound deny.
 The generator uses a temporary Go adapter to inspect the upstream types; no third-party source is copied into the product.
