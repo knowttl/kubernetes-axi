@@ -50,7 +50,7 @@ No reference implementation code was copied.
 
 Before installation, place the official binaries listed in kubectl-pins.json in `vendor/` using its recorded filenames.
 Verify each against the official published URL plus `.sha256`.
-The offline build checks both digests and never downloads a binary or falls back to PATH.
+Build preparation may download absent binaries from their pinned public URLs with SHA256 checked before writing; present binaries are digest-checked, and tests remain offline under outbound deny with no PATH fallback.
 Dependency installation uses the npm registry; Kubernetes verification stays local.
 
 ```text
