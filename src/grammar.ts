@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import { Failure } from './errors.js';
 import { metadataSha256 } from './metadata-pin.js';
 
@@ -12,6 +13,8 @@ export interface Invocation {
   native: boolean;
   config?: string;
   profile?: string;
+  nativeConfig?: string;
+  trustExec: boolean;
   command: Command;
   argv: string[];
   positionals: string[];
@@ -24,7 +27,7 @@ export function parse(args: string[]): Invocation {
   if (createHash('sha256').update(bytes).digest('hex') !== metadataSha256 || metadata.version !== 'v1.32.2') {
     throw new Failure('METADATA_STALE', 'Rebuild reviewed command metadata for the installed kubectl pin.');
   }
-  const own: { config?: string; profile?: string } = {};
+  const own: { config?: string; profile?: string; nativeConfig?: string; trustExec: boolean } = { trustExec: false };
   const argv: string[] = [];
   let native = false;
   for (let index = 0; index < args.length; index++) {
@@ -37,13 +40,19 @@ export function parse(args: string[]): Invocation {
     }
     if (arg === '--') { argv.push(...args.slice(index)); break; }
     const [name, ...valueParts] = arg.split('=');
-    if (name === '--config' || name === '--profile') {
+    if (arg === '--trust-exec') { own.trustExec = true; continue; }
+    if (name === '--config' || name === '--profile' || name === '--native-config') {
       const value = valueParts.length ? valueParts.join('=') : args[++index];
       if (!value || value.startsWith('-')) throw new Failure('USAGE', `${name} requires a value.`, 2);
-      const key = name === '--config' ? 'config' : 'profile';
+      const key = name === '--config' ? 'config' : name === '--profile' ? 'profile' : 'nativeConfig';
       if (own[key] !== undefined) throw new Failure('USAGE', `Supply ${name} once.`, 2);
       own[key] = value;
     } else argv.push(arg);
+  }
+  const localCommand = argv.filter(arg => !['--help', '-h'].includes(arg)).join(' ');
+  if (['auth status', 'profile list', 'config path', 'doctor'].includes(localCommand)) {
+    if (own.nativeConfig || own.trustExec) throw new Failure('USAGE', 'Use native -- for native configuration diagnostics.', 2);
+    return { native: false, ...own, command: { path: localCommand, aliases: [], flags: ['config', 'profile', 'help'].map(name => ({ name, short: '', type: name === 'help' ? 'bool' : 'string', default: '', noOpt: name === 'help' ? 'true' : '', usage: '', effect: 'argument' })), use: localCommand, description: 'Inspect standard credential configuration without a cluster request.', effect: 'localRead' }, argv, positionals: [], flags: new Map(), help: argv.some(arg => ['--help', '-h'].includes(arg)), home: false };
   }
   // Resolve the longest command path while respecting values of inherited flags.
   let command = metadata.commands.find(item => item.path === '')!;
@@ -86,6 +95,8 @@ export function parse(args: string[]): Invocation {
   if (command.path === '' && positionals.length) throw new Failure('USAGE', 'Unknown command. Run kubernetes-axi --help.', 2);
   if (!command.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The command has no reviewed effect classification.');
   if (!help) {
+    if (native && ['get', 'describe'].includes(command.path) && positionals.some((value, index) => (index === 0 || value.includes('/')) && value.split(',').some(resource => /^secrets?(?:$|[/.])/i.test(resource)))) throw new Failure('CREDENTIAL_OUTPUT_REFUSED', 'Use compact get secrets for metadata; public native Secret output is unavailable.');
+    if (own.nativeConfig && ['config set', 'config set-credentials', 'config view'].includes(command.path)) throw new Failure('USAGE', 'Raw native credential inspection and credential argv writes are unavailable.', 2);
     if (command.compatibilityLimit) throw new Failure('NOT_YET_SUPPORTED_STAGED', command.compatibilityLimit);
     for (const flag of command.flags) {
       if (flag.effect === 'stream' && (flags.get(flag.name) ?? flag.default) !== 'false') throw new Failure('USAGE', `--${flag.name} must be false under the isolated bounded-read policy.`, 2);
@@ -94,10 +105,10 @@ export function parse(args: string[]): Invocation {
       const flag = command.flags.find(flag => flag.name === name)!;
       if (!flag.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The flag has no reviewed effect classification.');
       if (flag.effect === 'stream') continue;
-      if (!['argument', 'presentation'].includes(flag.effect)) throw new Failure('USAGE', `--${flag.name} is unavailable under the isolated bounded-read policy (${flag.effect}).`, 2);
+      if (!(own.nativeConfig && flag.name === 'context') && !['argument', 'presentation'].includes(flag.effect)) throw new Failure('USAGE', `--${flag.name} is unavailable under the isolated bounded-read policy (${flag.effect}).`, 2);
       if (flag.name === 'output' && /file[=\s]|template-file/.test(flags.get(flag.name)!)) throw new Failure('USAGE', 'File templates require a later local-file capability.', 2);
     }
-    if (!['read', 'local'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `The ${command.effect} capability is not available in this milestone.`);
+    if (!(own.nativeConfig && native && command.path.startsWith('config ')) && !['read', 'local'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `The ${command.effect} capability is not available in this milestone.`);
     if (['wait', 'events'].includes(command.path)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bounded event reads use get events; wait and streaming sessions require a later capability.');
     if (!native) {
       const allowed: Record<string, string[]> = {
@@ -113,6 +124,9 @@ export function parse(args: string[]): Invocation {
       if (command.path === 'get' && flags.has('output') && flags.get('output') !== 'json') throw new Failure('USAGE', 'Compact reads support -o json; use native -- for other output formats.', 2);
     }
   }
+  if (own.trustExec && !own.nativeConfig) throw new Failure('USAGE', '--trust-exec requires --native-config.', 2);
+  if (own.nativeConfig && own.nativeConfig !== 'ambient' && !isAbsolute(own.nativeConfig)) throw new Failure('CONFIG_INVALID', 'Select an absolute native kubeconfig path or ambient.');
+  if (own.nativeConfig && (own.config || own.profile || ['CONFIG', 'PROFILE', 'ORIGIN', 'AUTH', 'NAMESPACE', 'CERTIFICATE_AUTHORITY', 'TOKEN', 'CLIENT_CERTIFICATE', 'PRIVATE_KEY'].some(field => process.env[`KUBERNETES_AXI_${field}`] !== undefined))) throw new Failure('CONFIG_INVALID', 'Native selection cannot override a standard or hosted profile.');
   return { native, ...own, command, argv, positionals, flags, help, home: command.path === '' && positionals.length === 0 };
 }
 

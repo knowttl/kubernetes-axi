@@ -1,7 +1,7 @@
 # kubernetes-axi
 
 An agent-facing TypeScript CLI that runs pinned kubectl with an isolated identity.
-The standalone package implements B1.1 and the bounded reads and generated command policy in B2.1 and B2.2.
+The standalone package implements B1.1 and B2.1 through B2.4: bounded reads, generated command policy, standard profiles and an explicit native identity adapter.
 The opt-in B1.2 verification journey exercises version and pod reads through a frozen local Artium fixture.
 The Linux portion of B1.3 is covered; native Windows execution and ACL conformance remain pending.
 Complete command coverage and live commissioning remain later tasks.
@@ -49,7 +49,7 @@ The npm package is `@knowttl/kubernetes-axi`; the executable is `kubernetes-axi`
 
 Node and npm requirements are pinned in [package.json](package.json), with exact dependencies in package-lock.json.
 The recorded verification toolchain uses Python **3.12.3** and OpenSSL **3.0.13**.
-Linux verification also requires `unshare` and `ip` with permission to create a user and network namespace.
+Linux verification also requires `unshare`, `ip` and `prlimit`, with permission to create a user and network namespace.
 Python and OpenSSL are verification prerequisites, not product runtime dependencies.
 No reference implementation code was copied.
 
@@ -64,6 +64,8 @@ npm run check
 python3 scripts/verify.py task B1.1 --mode offline --pack evidence
 python3 scripts/verify.py task B2.1 --mode offline --pack evidence
 python3 scripts/verify.py task B2.2 --mode offline --pack evidence
+python3 scripts/verify.py task B2.3 --mode offline --pack evidence
+python3 scripts/verify.py task B2.4 --mode offline --pack evidence
 ```
 
 Verification packs the product, installs that tarball into an isolated temporary prefix, and executes its public CLI.
@@ -95,7 +97,9 @@ B1.3 and `gate 1` report native Windows as pending and exit 2 after the Linux jo
 The `release` entry point also remains pending because later stages are unimplemented.
 Pending never counts as pass.
 The B1.1 verifier reports missing npm or OpenSSL as pending and exits 2; integrity mismatches remain failures and exit 1.
-Both B2 task commands run the combined B2.1/B2.2 harness, which requires Linux network namespaces, npm, OpenSSL and cached npm dependencies; missing prerequisites fail the run.
+The B2 task commands run the combined B2 harness and private-file checks, which require Linux network namespaces, npm, OpenSSL, prlimit and cached npm dependencies; missing prerequisites fail the run.
+The private-file checks interrupt a real write with a file-size limit and verify preservation of the prior file and removal of the temporary file.
+Injected Windows ACL checks exercise the platform branch; native Windows commissioning remains pending.
 
 ```text
 python3 scripts/verify.py task B1.1 --mode offline --pack evidence --negative-control
@@ -138,7 +142,8 @@ Unknown flags are rejected before effects.
 Compact reads reject unsupported flags explicitly; the native route preserves repeated flags and the native `--` boundary.
 AXI `--profile` selects an identity before `native --`; upstream `--profile` after that delimiter is classified as profiling output and refused.
 Credential, server, impersonation, TLS-bypass, raw-route, filesystem and streaming options are refused by this milestone's policy.
-Mutations, local config changes, arbitrary execution, transfers and connections remain staged for their later capabilities.
+Cluster mutations, arbitrary execution, transfers and connections remain staged for their later capabilities.
+Explicit local native configuration edits are available through the native identity adapter described below.
 Diff has an approved staged compatibility limit: `NOT_YET_SUPPORTED_STAGED`, before reading a manifest or invoking a helper.
 When its later file/helper capability is implemented, native diff must retain exit 0 for no differences, 1 for differences and greater than 1 for failure.
 
@@ -192,7 +197,40 @@ File profiles may deliberately reference any valid named environment variable th
 If a file profile omits its token or privateKey reference, the secret is read from KUBERNETES_AXI_TOKEN or KUBERNETES_AXI_PRIVATE_KEY respectively.
 Certificate authority and client certificate fields contain PEM text, and secret files use absolute local paths.
 
-All currently supported operations are reads.
-KUBERNETES_AXI_READ_ONLY accepts only true, false, 1 or 0; no write journal is produced.
-The broader native kubeconfig adapter and credential-management commands are later tasks.
+`auth status`, `profile list`, `config path` and `doctor` inspect standard credential configuration without a cluster request.
+Status and doctor verify file permissions, including Windows DACLs; evidence on a native Windows host remains pending.
+Private writes use a same-directory exclusive temporary file, fsync and atomic rename, with bounded Windows rename retries.
+Redirected paths and insecure files fail before reading credentials.
+KUBERNETES_AXI_READ_ONLY accepts only true, false, 1 or 0 and also gates native configuration writes.
+No cluster writes or write journal are implemented in this slice.
 The frozen Artium fixture owns hosted profile injection and role policy; it is local integration evidence, not a claim of released Artium support.
+
+## Explicit native identity
+
+```text
+kubernetes-axi --native-config /absolute/kubeconfig get pods
+kubernetes-axi --native-config ambient native -- --context=<context> get pods -o json
+kubernetes-axi --native-config /absolute/kubeconfig --trust-exec get pods
+kubernetes-axi --native-config /absolute/kubeconfig native -- config use-context <context>
+```
+
+`ambient` uses native KUBECONFIG precedence, or the platform home directory's `.kube/config` when it is unset.
+An explicitly selected file does not merge other native files.
+Native selection is refused when a standard profile is selected or injected.
+The adapter resolves the selected context in memory and executes with an isolated temporary kubeconfig.
+Ordinary reads leave the original native files unchanged, and cancellation removes temporary credentials.
+Native context selection is available after `native --`; other identity, impersonation, raw-output and TLS-bypass flags remain refused.
+Token and client-certificate identities require explicit CA trust.
+
+Helpers require explicit `--trust-exec` after reviewing the selected configuration.
+A tool-owned shim brokers each ExecCredential acquisition or renewal over a private local socket.
+The parent registers acquired credentials and encoded forms before returning them to kubectl.
+Raw helper output and failures never reach public streams.
+The helper receives its native API version, cluster information and noninteractive execution information.
+Its existing environment and cache remain helper-owned under the local ambient exception; credentials are never imported into AXI storage.
+Helpers requiring a terminal, legacy auth-provider plugins and native Windows helper channels fail explicitly; their commissioning remains pending.
+
+Native configuration operations require a single explicit source path.
+Successful edits atomically replace that source file, preserving other native sources.
+Generic `config set`, credential argv writes and raw credential inspection are refused.
+Public native Secret reads are refused; compact `get secrets` returns metadata only.

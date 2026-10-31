@@ -37,6 +37,15 @@ const validateConfig = ajv.compile<{ version: 1; defaultProfile?: string; profil
   },
 });
 
+export async function profiles(config?: string, diagnostic = false): Promise<{ version: 1; defaultProfile?: string; profiles: Record<string, Profile> }> {
+  const value: unknown = JSON.parse(await readPrivate(configPath(config), false, { diagnostic }));
+  if (!validateConfig(value)) throw new Failure('CONFIG_INVALID', 'Use strict profiles; token and privateKey fields require SecretRefs, never inline values.');
+  for (const profile of Object.values(value.profiles)) for (const ref of [profile.token, profile.privateKey]) {
+    if (ref && 'file' in ref && (!isAbsolute(ref.file) || (process.platform === 'win32' && !/^[A-Za-z]:\\/.test(ref.file)))) throw new Failure('CONFIG_INVALID', 'SecretRef file paths must be absolute local paths.');
+  }
+  return value;
+}
+
 export function configPath(explicit?: string): string {
   const base = process.platform === 'win32'
     ? process.env.APPDATA
@@ -47,24 +56,28 @@ export function configPath(explicit?: string): string {
   return path;
 }
 
-async function resolveSecret(ref: SecretRef): Promise<string> {
+async function resolveSecret(ref: SecretRef, diagnostic: boolean): Promise<string> {
   let value: string | undefined;
   if ('env' in ref) value = process.env[ref.env];
   else {
     if (!isAbsolute(ref.file) || (process.platform === 'win32' && !/^[A-Za-z]:\\/.test(ref.file))) {
       throw new Failure('CONFIG_INVALID', 'Secret file must use an absolute local path.');
     }
-    value = (await readPrivate(ref.file, true)).replace(/^\uFEFF/, '').trimEnd();
+    value = (await readPrivate(ref.file, true, { diagnostic })).replace(/^\uFEFF/, '').trimEnd();
   }
   if (!value) throw new Failure('AUTH_REQUIRED', 'Supply the selected secret through its environment or protected-file reference.');
   return value;
 }
 
-export async function identity(config?: string, selected?: string): Promise<Identity> {
+export function validateEnvironment(): void {
   const readOnly = process.env.KUBERNETES_AXI_READ_ONLY;
   if (readOnly !== undefined && !/^(true|false|0|1)$/i.test(readOnly)) {
     throw new Failure('CONFIG_INVALID', 'KUBERNETES_AXI_READ_ONLY must be true, false, 1 or 0.');
   }
+}
+
+export async function identity(config?: string, selected?: string, diagnostic = false): Promise<Identity> {
+  validateEnvironment();
   const name = selected ?? process.env.KUBERNETES_AXI_PROFILE;
   const fields = ['ORIGIN', 'AUTH', 'NAMESPACE', 'CERTIFICATE_AUTHORITY', 'TOKEN', 'CLIENT_CERTIFICATE', 'PRIVATE_KEY'] as const;
   let profile: unknown;
@@ -79,18 +92,17 @@ export async function identity(config?: string, selected?: string): Promise<Iden
       ['privateKey', env.KUBERNETES_AXI_PRIVATE_KEY === undefined ? undefined : { env: 'KUBERNETES_AXI_PRIVATE_KEY' }],
     ].filter(([, value]) => value !== undefined));
     source = 'environment';
+    if (!(env.KUBERNETES_AXI_AUTH === 'token' ? env.KUBERNETES_AXI_TOKEN : env.KUBERNETES_AXI_PRIVATE_KEY)) throw new Failure('CONFIG_INVALID', 'Supply every required environment profile field, including its secret.');
   } else {
-    let contents: string;
+    let file;
     try {
-      contents = await readPrivate(configPath(config), false);
+      file = await profiles(config, diagnostic);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         throw new Failure('AUTH_REQUIRED', 'Supply a complete environment profile or select a configured profile.');
       }
       throw error;
     }
-    const file: unknown = JSON.parse(contents);
-    if (!validateConfig(file)) throw new Failure('CONFIG_INVALID', 'Use a version 1 config with strict profiles and SecretRefs.');
     const names = Object.keys(file.profiles);
     const chosen = name ?? file.defaultProfile ?? (names.length === 1 ? names[0] : undefined);
     if (!chosen) throw new Failure(names.length ? 'PROFILE_AMBIGUOUS' : 'PROFILE_REQUIRED', 'Select a profile with --profile <name>.');
@@ -105,6 +117,6 @@ export async function identity(config?: string, selected?: string): Promise<Iden
   }
   const secret = await resolveSecret(profile.auth === 'token'
     ? profile.token ?? { env: 'KUBERNETES_AXI_TOKEN' }
-    : profile.privateKey ?? { env: 'KUBERNETES_AXI_PRIVATE_KEY' });
+    : profile.privateKey ?? { env: 'KUBERNETES_AXI_PRIVATE_KEY' }, diagnostic);
   return { profile, source, secret };
 }

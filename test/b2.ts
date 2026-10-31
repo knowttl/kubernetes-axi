@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
 import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -25,6 +25,7 @@ const openssl = (...args: string[]): void => { execFileSync('openssl', args, { c
 openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '1', '-subj', '/CN=synthetic-ca');
 openssl('req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'server.key', '-out', 'server.csr', '-subj', '/CN=localhost', '-addext', 'subjectAltName=IP:127.0.0.1');
 openssl('x509', '-req', '-in', 'server.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial', '-out', 'server.crt', '-days', '1', '-copy_extensions', 'copy');
+chmodSync(join(directory, 'ca.crt'), 0o644);
 
 const apiGroup = (name: string, version: string) => ({ name, versions: [{ groupVersion: `${name}/${version}`, version }], preferredVersion: { groupVersion: `${name}/${version}`, version } });
 const resource = (name: string, kind: string, namespaced: boolean, shortNames: string[] = []) => ({ name, singularName: kind.toLowerCase(), kind, namespaced, shortNames, verbs: ['get', 'list'] });
@@ -34,12 +35,16 @@ const groups = fixture('P-003').body;
 groups.groups.push(apiGroup('metrics.k8s.io', 'v1beta1'), apiGroup('synthetic.example', 'v1'));
 groups.groups.at(-1).versions.push({ groupVersion: 'synthetic.example/v1beta1', version: 'v1beta1' });
 const requests: string[] = [];
+const identities: string[] = [];
+const helperTokens = ['synthetic-helper-first+/=', 'synthetic-helper-renewed+/='];
 let variant = '';
+let cancelRequest: (() => void) | undefined;
 let override: { path: string; envelope: Envelope | 'malformed' | 'timeout' | 'oversize' } | undefined;
 const server = createServer({ key: readFileSync(join(directory, 'server.key')), cert: readFileSync(join(directory, 'server.crt')) }, (request, response) => {
   requests.push(request.url!);
   const url = new URL(request.url!, 'https://127.0.0.1');
   const path = url.pathname;
+  if (variant === 'cancel') { cancelRequest?.(); return; }
   const send = (envelope: Envelope): void => {
     response.writeHead(envelope.status, { 'Content-Type': 'application/json', ...envelope.headers });
     response.end(typeof envelope.body === 'string' ? envelope.body : JSON.stringify(envelope.body));
@@ -50,7 +55,8 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
     if (url.searchParams.has('continue')) envelope.body = { ...envelope.body, metadata: { resourceVersion: envelope.body.metadata.resourceVersion }, items: [] };
     send(envelope);
   };
-  if (request.headers.authorization !== 'Bearer synthetic-selected-token') return send({ status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } });
+  identities.push(request.headers.authorization ?? '');
+  if (!['synthetic-selected-token', ...helperTokens].some(token => request.headers.authorization === `Bearer ${token}`)) return send({ status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } });
   if (override?.path === path) {
     if (override.envelope === 'timeout') return; // Server remains open until the client's real deadline cancels it.
     if (override.envelope === 'malformed') { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{broken'); return; }
@@ -126,7 +132,139 @@ const check = async (id: string, test: () => Promise<void>): Promise<void> => {
 const compact = async (...args: string[]): Promise<any> => {
   const result = await run(args); assert.equal(result.code, 0, result.stdout); assert.equal(result.stderr, ''); return decode(result.stdout);
 };
+const nativeFile = join(directory, 'native.json');
+const decoyFile = join(directory, 'decoy.json');
+const nativeSettings = {
+  apiVersion: 'v1', kind: 'Config',
+  clusters: [{ name: 'local', cluster: { server: `https://127.0.0.1:${address.port}`, 'certificate-authority-data': readFileSync(join(directory, 'ca.crt')).toString('base64') } }],
+  users: [{ name: 'local', user: { token: 'synthetic-selected-token' } as Record<string, unknown> }],
+  contexts: [{ name: 'local', context: { cluster: 'local', user: 'local', namespace: 'kube-system' } }, { name: 'other', context: { cluster: 'local', user: 'local', namespace: 'decoy' } }],
+  'current-context': 'local',
+};
+writeFileSync(nativeFile, JSON.stringify(nativeSettings), { mode: 0o600 });
+writeFileSync(decoyFile, JSON.stringify({ ...nativeSettings, 'current-context': 'other' }), { mode: 0o600 });
+const local = async (test: () => Promise<void>): Promise<void> => {
+  const selected = environment.KUBERNETES_AXI_CONFIG;
+  delete environment.KUBERNETES_AXI_CONFIG;
+  try { await test(); } finally { environment.KUBERNETES_AXI_CONFIG = selected; }
+};
 try {
+  await check('CC-008/014-cancellation-cleanup', async () => {
+    variant = 'cancel';
+    const arrived = new Promise<void>(done => { cancelRequest = done; });
+    let child: ReturnType<typeof execFile>;
+    const finished = new Promise<void>(done => {
+      child = execFile(process.execPath, [cli, 'get', 'pods'], { env: environment, timeout: 20_000 }, () => done());
+    });
+    await arrived;
+    child!.kill('SIGTERM');
+    await finished;
+    assert.deepEqual(readdirSync(temporary), []);
+    cancelRequest = undefined;
+  });
+  await check('CC-005-private-inputs', async () => {
+    const link = join(directory, 'redirected-config'); symlinkSync(config, link);
+    for (const path of [link, config]) {
+      if (path === config) chmodSync(config, 0o666);
+      try { const result = await run(['--config', path, 'get', 'pods']); assert.equal((decode(result.stdout) as any).error.code, 'CONFIG_INSECURE'); assert.equal(requests.length, 0); }
+      finally { chmodSync(config, 0o600); }
+    }
+  });
+  await check('CC-002-partial-environment', async () => {
+    environment.KUBERNETES_AXI_ORIGIN = nativeSettings.clusters[0]!.cluster.server;
+    try { const result = await run(['get', 'pods']); assert.equal((decode(result.stdout) as any).error.code, 'CONFIG_INVALID'); assert.equal(requests.length, 0); }
+    finally { delete environment.KUBERNETES_AXI_ORIGIN; }
+  });
+  await check('CC-001-profile-isolation', async () => {
+    environment.KUBERNETES_AXI_ORIGIN = 'https://poison.invalid';
+    try { assert.equal((await compact('--profile', 'selected', 'get', 'pods')).source, 'file:selected'); }
+    finally { delete environment.KUBERNETES_AXI_ORIGIN; }
+  });
+  await check('CC-001-file-selection-precedence', async () => {
+    const original = readFileSync(config);
+    const settings = JSON.parse(original.toString());
+    settings.profiles.decoy = { ...settings.profiles.selected, namespace: 'decoy' };
+    try {
+      writeFileSync(config, JSON.stringify(settings));
+      environment.KUBERNETES_AXI_PROFILE = 'decoy';
+      assert.equal((await compact('get', 'pods')).pods[0].name, 'decoy-pod');
+      assert.equal((await compact('--profile', 'selected', 'get', 'pods')).pods[0].name, 'resource-008');
+      delete environment.KUBERNETES_AXI_PROFILE;
+      assert.equal((await compact('get', 'pods')).source, 'file:selected');
+      delete settings.defaultProfile; writeFileSync(config, JSON.stringify(settings));
+      const ambiguous = await run(['get', 'pods']); assert.equal((decode(ambiguous.stdout) as any).error.code, 'PROFILE_AMBIGUOUS');
+      const missing = await run(['--profile', 'missing', 'get', 'pods']); assert.equal((decode(missing.stdout) as any).error.code, 'PROFILE_NOT_FOUND');
+      settings.profiles = {}; writeFileSync(config, JSON.stringify(settings));
+      const empty = await run(['get', 'pods']); assert.equal((decode(empty.stdout) as any).error.code, 'PROFILE_REQUIRED');
+    } finally { delete environment.KUBERNETES_AXI_PROFILE; writeFileSync(config, original); }
+  });
+  await check('standard-diagnostics', async () => {
+    assert.equal((await compact('auth', 'status')).secretSource.env, 'SYNTHETIC_TOKEN');
+    assert.deepEqual((await compact('profile', 'list')).profiles, [{ name: 'selected', default: true }]);
+    assert.equal((await compact('config', 'path')).path, config);
+    assert.equal(requests.length, 0);
+  });
+  await check('CC-009-native-selection', async () => local(async () => {
+    const saved = environment.KUBECONFIG;
+    environment.KUBECONFIG = `${decoyFile}:${nativeFile}`;
+    const original = readFileSync(nativeFile);
+    try {
+      const result = await run(['--native-config', 'ambient', 'native', '--', '--context=local', 'get', 'pods', '-o', 'json']);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.items[0].metadata.name, 'resource-008');
+      assert.equal((await compact('--native-config', 'ambient', 'get', 'pods')).pods[0].name, 'decoy-pod');
+      assert.deepEqual(readFileSync(nativeFile), original);
+      const relative = structuredClone(nativeSettings) as any;
+      delete relative.clusters[0].cluster['certificate-authority-data'];
+      relative.clusters[0].cluster['certificate-authority'] = 'ca.crt';
+      writeFileSync(nativeFile, JSON.stringify(relative));
+      assert.equal((await compact('--native-config', nativeFile, 'get', 'pods')).pods[0].name, 'resource-008');
+      assert.deepEqual(readdirSync(temporary), []);
+    } finally { environment.KUBECONFIG = saved; writeFileSync(nativeFile, original); }
+  }));
+  await check('CC-009-native-source-edit', async () => local(async () => {
+    const original = readFileSync(nativeFile);
+    const decoy = readFileSync(decoyFile);
+    environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    try {
+      const result = await run(['--native-config', nativeFile, 'native', '--', 'config', 'use-context', 'other']);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      const current = await run(['--native-config', nativeFile, 'native', '--', 'config', 'current-context']);
+      assert.equal(current.stdout, 'other\n'); assert.deepEqual(readFileSync(decoyFile), decoy); assert.equal(requests.length, 0);
+      const beforeFailure = readFileSync(nativeFile);
+      const failure = await run(['--native-config', nativeFile, 'native', '--', 'config', 'use-context', 'missing']);
+      assert.notEqual(failure.code, 0); assert.deepEqual(readFileSync(nativeFile), beforeFailure);
+    } finally { writeFileSync(nativeFile, original); environment.KUBERNETES_AXI_READ_ONLY = 'true'; }
+  }));
+  await check('CC-012-helper-renewal-redaction', async () => local(async () => {
+    const original = readFileSync(nativeFile);
+    const counter = join(directory, 'helper-count');
+    const helper = structuredClone(nativeSettings);
+    helper.users[0]!.user = { exec: { apiVersion: 'client.authentication.k8s.io/v1', command: process.execPath, args: [join(root, 'test/credential-helper.ts')], interactiveMode: 'Never', provideClusterInfo: true,
+      env: [{ name: 'SYNTHETIC_HELPER_COUNTER', value: counter }] } };
+    writeFileSync(nativeFile, JSON.stringify(helper));
+    identities.length = 0;
+    override = { path: '/api/v1/namespaces/kube-system/pods', envelope: { status: 200, headers: {}, body: { kind: 'PodList', apiVersion: 'v1', metadata: { continue: helperTokens.flatMap(token => [token, encodeURIComponent(token), Buffer.from(token).toString('base64')]).join('|') }, items: [] } } };
+    try {
+      const untrusted = await run(['--native-config', nativeFile, 'get', 'pods']);
+      assert.equal((decode(untrusted.stdout) as any).error.code, 'AUTH_HELPER_UNTRUSTED'); assert.equal(requests.length, 0);
+      const result = await run(['--native-config', nativeFile, '--trust-exec', 'get', 'pods']);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert.equal((decode(result.stdout) as any).continue, Array(6).fill('[REDACTED]').join('|'));
+      assert(identities.includes(`Bearer ${helperTokens[0]}`)); assert(identities.includes(`Bearer ${helperTokens[1]}`));
+      assert(Number(readFileSync(counter, 'utf8')) >= 2);
+      writeFileSync(counter, '0');
+      override = { path: '/api/v1/namespaces/kube-system/pods/resource-008/log', envelope: { status: 200, headers: { 'Content-Type': 'text/plain' }, body: helperTokens.flatMap(token => [token, encodeURIComponent(token), Buffer.from(token).toString('base64')]).join('|') } };
+      const native = await run(['--native-config', nativeFile, '--trust-exec', 'native', '--', 'logs', 'resource-008']);
+      assert.equal(native.code, 0, native.stdout + native.stderr);
+      assert.equal(native.stdout, Array(6).fill('[REDACTED]').join('|'));
+      environment.SYNTHETIC_HELPER_FAILURE = 'true';
+      const failure = await run(['--native-config', nativeFile, '--trust-exec', 'native', '--', 'get', 'pods']);
+      assert.notEqual(failure.code, 0); assert(!`${failure.stdout}${failure.stderr}`.includes(helperTokens[0]!));
+      assert.deepEqual(readdirSync(temporary), []);
+    } finally { delete environment.SYNTHETIC_HELPER_FAILURE; writeFileSync(nativeFile, original); }
+  }));
   const lists = [
     ['AC-004', 'P-004', 'namespaces', undefined, 'phase'],
     ['AC-005', 'P-005', 'nodes', undefined, 'ready'],
@@ -227,6 +365,7 @@ try {
     finally { environment.SYNTHETIC_TOKEN = saved!; }
   });
   for (const args of [
+    ['native', '--', 'get', 'secrets', '-o', 'json'],
     ['get', 'pods', '--namespce=other'], ['native', '--', 'get', 'pods', '--profile=cpu'], ['native', '--', 'get', 'pods', '--server=https://example.invalid'],
     ['native', '--', 'exec', 'resource-008', '--', 'sh'], ['native', '--', 'get', 'pods', '--watch'], ['get', 'pods', '--chunk-size=0'],
     ['native', '--', 'scale', 'deployment/demo', '--replicas=2'], ['native', '--', 'create', 'token', 'demo'],
@@ -261,9 +400,9 @@ try {
   });
 } finally {
   server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
-  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
+  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
     packageSha256: createHash('sha256').update(readFileSync(join(directory, packed[0].filename))).digest('hex'),
     kubectlPins: JSON.parse(readFileSync(join(installed, 'kubectl-pins.json'), 'utf8')),
-    publicPaths: ['installed compact CLI', 'installed native kubectl route'], network: 'isolated Linux network namespace; loopback only', fixtureHashes: hashes, cases, pending: ['Artium B2.2 path pending stage-1 gate', 'native Windows commissioning'] }, null, 2));
+    publicPaths: ['installed compact CLI', 'installed native kubectl route'], network: 'isolated Linux network namespace; loopback only', fixtureHashes: hashes, cases, pending: ['Artium journeys require the separate opt-in verifier', 'native Windows commissioning'] }, null, 2));
   rmSync(directory, { recursive: true, force: true });
 }

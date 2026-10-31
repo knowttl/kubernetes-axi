@@ -186,7 +186,7 @@ try {
     assert.deepEqual(db.prepare("SELECT outcome FROM audit WHERE event = 'denial' ORDER BY id DESC LIMIT 1").get(), { outcome: 'TOOL_NOT_GRANTED' });
     db.exec("INSERT INTO role_tools VALUES ('synthetic-role', 'kubernetes-axi')");
   });
-  for (const flag of ['config', 'profile', 'kubeconfig', 'server', 'context', 'user', 'token', 'as', 'as-group', 'as-uid',
+  for (const flag of ['config', 'profile', 'native-config', 'trust-exec', 'kubeconfig', 'server', 'context', 'user', 'token', 'as', 'as-group', 'as-uid',
     'certificate-authority', 'client-certificate', 'client-key', 'insecure-skip-tls-verify']) {
     for (const override of [[`--${flag}`, 'synthetic-override'], [`--${flag}=synthetic-override`]]) {
       await check('CC-010', 'OP-006', override.join(' '), async () => {
