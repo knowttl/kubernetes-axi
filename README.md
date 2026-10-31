@@ -16,7 +16,16 @@ This milestone performs one bounded list and does not follow the continuation to
 It uses kubectl discovery followed by kubectl's raw GET transport for a page limited to 100 pods.
 Native `kubectl get pods` consumes continuation tokens even when chunking is disabled, so the bounded read retains the original page state explicitly.
 
-## Offline build and verification
+## Install
+
+```text
+npm install -g @knowttl/kubernetes-axi
+kubernetes-axi --version
+```
+
+The npm package is `@knowttl/kubernetes-axi`; the executable is `kubernetes-axi`.
+
+## Build and verification
 
 Node and npm requirements are pinned in [package.json](package.json), with exact dependencies in package-lock.json.
 The recorded verification toolchain uses Python **3.12.3** and OpenSSL **3.0.13**.
@@ -26,15 +35,15 @@ No reference implementation code was copied.
 Before installation, place the official binaries listed in kubectl-pins.json in `vendor/` using its recorded filenames.
 Verify each against the official published URL plus `.sha256`.
 The offline build checks both digests and never downloads a binary or falls back to PATH.
-The local npm cache must already contain the locked dependencies.
+Dependency installation uses the npm registry; Kubernetes verification stays local.
 
 ```text
-npm ci --offline
-npm run check --offline
+npm ci
+npm run check
 python3 scripts/verify.py task B1.1 --mode offline --pack evidence
 ```
 
-Verification packs the product, installs that tarball into an isolated temporary prefix using the offline npm cache, and executes its public CLI.
+Verification packs the product, installs that tarball into an isolated temporary prefix, and executes its public CLI.
 Only the external Kubernetes API is fake.
 It uses a verified TLS loopback server, two synthetic token identities and a synthetic client certificate.
 Discovery responses are synthetic; see [evidence/README.md](evidence/README.md) for retained response provenance and the fixture integrity source.
@@ -45,7 +54,7 @@ The verification report records individual cases, native OS, package digest, fix
 `--artium <checkout>` optionally records that checkout's revision; it does not claim Artium verification.
 The `gate 1` and `release` entry points report the remaining prerequisites as pending and exit 2, even after B1.1 passes.
 Pending never counts as pass.
-Missing npm, OpenSSL or offline dependency cache entries also report pending and exit 2; integrity mismatches remain failures and exit 1.
+Missing npm or OpenSSL also report pending and exit 2; integrity mismatches remain failures and exit 1.
 
 ```text
 python3 scripts/verify.py task B1.1 --mode offline --pack evidence --negative-control
@@ -56,6 +65,13 @@ The same outcome assertions must report failure and exit 1 before the verifier i
 
 The managed kubectl version, supported server minors, binary digests and commissioning status are recorded in [kubectl-pins.json](kubectl-pins.json).
 The Windows binary and digest are recorded, but Linux verification does not establish native Windows or ACL conformance.
+
+## Releases
+
+Release Please opens release PRs on `main`, starting at 0.1.0.
+Merging a release PR creates the GitHub release and runs the release workflow's clean install, checks and public npm publish with provenance.
+Configure the npm trusted publisher for `@knowttl/kubernetes-axi` with owner `knowttl`, repository `kubernetes-axi` and workflow `release-please.yml` before releasing.
+The workflow uses GitHub OIDC without an npm token.
 
 ## Isolated credentials
 
