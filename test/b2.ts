@@ -32,6 +32,7 @@ const discovery = (groupVersion: string, resources: object[]) => ({ kind: 'APIRe
 const core = discovery('v1', [resource('pods', 'Pod', true, ['po']), resource('namespaces', 'Namespace', false, ['ns']), resource('nodes', 'Node', false, ['no']), resource('events', 'Event', true, ['ev'])]);
 const groups = fixture('P-003').body;
 groups.groups.push(apiGroup('metrics.k8s.io', 'v1beta1'), apiGroup('synthetic.example', 'v1'));
+groups.groups.at(-1).versions.push({ groupVersion: 'synthetic.example/v1beta1', version: 'v1beta1' });
 const requests: string[] = [];
 let variant = '';
 let override: { path: string; envelope: Envelope | 'malformed' | 'timeout' | 'oversize' } | undefined;
@@ -62,7 +63,8 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
   if (path === '/api/v1') return json(core);
   if (path === '/apis/apps/v1') return json(discovery('apps/v1', [resource('deployments', 'Deployment', true, ['deploy'])]));
   if (path === '/apis/metrics.k8s.io/v1beta1') return json(discovery('metrics.k8s.io/v1beta1', [resource('nodes', 'NodeMetrics', false), resource('pods', 'PodMetrics', true)]));
-  if (path === '/apis/synthetic.example/v1') return json(discovery('synthetic.example/v1', [resource('widgets', 'Widget', true, ['wd'])]));
+  if (path === '/apis/synthetic.example/v1') return json(discovery('synthetic.example/v1', []));
+  if (path === '/apis/synthetic.example/v1beta1') return json(discovery('synthetic.example/v1beta1', [resource('widgets', 'Widget', true, ['wd'])]));
   if (path.split('/').length === 4 && path.startsWith('/apis/')) return json(discovery(path.slice(6), []));
   if (path === '/api/v1/namespaces') return page(variant === 'namespace-filter' ? 'P-011' : 'P-004');
   if (path === '/api/v1/nodes') {
@@ -77,7 +79,7 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
   if (path === '/api/v1/namespaces/kube-system/pods') return page('P-006');
   if (path === '/apis/metrics.k8s.io/v1beta1/nodes') return send(fixture('metrics-node-success'));
   if (path === '/apis/metrics.k8s.io/v1beta1/namespaces/synthetic-space/pods') return send(fixture('metrics-pod-success'));
-  if (path === '/apis/synthetic.example/v1/namespaces/kube-system/widgets') return json({ kind: 'WidgetList', apiVersion: 'synthetic.example/v1', metadata: {}, items: [{ metadata: { name: 'synthetic-widget', namespace: 'kube-system' } }] });
+  if (path === '/apis/synthetic.example/v1beta1/namespaces/kube-system/widgets') return json({ kind: 'WidgetList', apiVersion: 'synthetic.example/v1beta1', metadata: {}, items: [{ metadata: { name: 'synthetic-widget', namespace: 'kube-system' } }] });
   if (path === '/api/v1/namespaces/decoy/pods') return json({ kind: 'PodList', apiVersion: 'v1', metadata: {}, items: [{ metadata: { name: 'decoy-pod', namespace: 'decoy' }, status: { phase: 'Pending' } }] });
   if (path === '/openapi/v3') return json({ paths: { 'api/v1': { serverRelativeURL: '/openapi/v3/api/v1?hash=synthetic' } } });
   if (path === '/openapi/v3/api/v1') return json({ openapi: '3.0.0', info: { title: 'Synthetic schema', version: 'v1' }, paths: {
@@ -166,6 +168,24 @@ try {
     const result = await run([...args]); assert.equal(result.code, 1, result.stdout); assert.equal((decode(result.stdout) as any).error.code, code);
     const native = await run(['native', '--', ...args]); assert.notEqual(native.code, 0); assert(native.stdout || native.stderr);
   });
+  for (const name of ['forbidden', 'gone', 'timeout', 'unauthorized', 'expired', 'invalid-json']) await check(`failure-reason:${name}`, async () => {
+    override = { path: `/api/v1/namespaces/kube-system/pods/${name}`, envelope: { status: 404, headers: {}, body: {
+      kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', message: `pods "${name}" not found`, code: 404,
+    } } };
+    const result = await run(['get', 'pods', name]);
+    const failure = (decode(result.stdout) as any).error;
+    assert.equal(result.code, 1); assert.equal(failure.code, 'RESOURCE_NOT_FOUND'); assert.equal(failure.upstreamStatus, 404);
+    const native = await run(['native', '--', 'get', 'pods', name]);
+    assert.equal(native.code, 1); assert.equal(native.stdout, ''); assert.match(native.stderr, /Error from server \(NotFound\):/);
+    assert(native.stderr.includes(`"${name}"`));
+  });
+  for (const [status, reason, code] of [[401, 'Unauthorized', 'AUTH_REQUIRED'], [403, 'Forbidden', 'ACCESS_DENIED'], [410, 'Gone', 'RESOURCE_EXPIRED'], [504, 'Timeout', 'UPSTREAM_TIMEOUT']] as const) await check(`schema-reason:${reason}`, async () => {
+    override = { path: '/openapi/v3/api/v1', envelope: { status, headers: {}, body: {
+      kind: 'Status', apiVersion: 'v1', status: 'Failure', reason, message: `${reason}: openapi schema NotFound timeout`, code: status,
+    } } };
+    const result = await run(['explain', 'pods']);
+    assert.equal(result.code, 1); assert.equal((decode(result.stdout) as any).error.code, code);
+  });
   for (const [type, namespace, expected] of [
     ['node', undefined, { name: 'synthetic-node', cpu: '125m', memory: '64Mi' }],
     ['pod', 'synthetic-space', { name: 'synthetic-pod', namespace: 'synthetic-space', cpu: '50m', memory: '48Mi' }],
@@ -182,7 +202,10 @@ try {
   });
   await check('AC-002-003-026', async () => {
     const discovery = await compact('api-versions'); assert.deepEqual(discovery.versions, fixture('P-002').body.versions); assert(discovery.groups.some((group: any) => group.name === 'apps' && group.preferredVersion === 'apps/v1'));
-    const resources = await compact('api-resources'); assert.deepEqual(resources.resources.find((item: any) => item.name === 'widgets'), { name: 'widgets', aliases: ['wd'], namespaced: true, kind: 'Widget', verbs: ['get', 'list'], apiVersion: 'synthetic.example/v1' });
+    assert.deepEqual(discovery.groups.find((group: any) => group.name === 'autoscaling').versions, ['autoscaling/v2', 'autoscaling/v1']);
+    assert.deepEqual(discovery.groups.find((group: any) => group.name === 'synthetic.example').versions, ['synthetic.example/v1', 'synthetic.example/v1beta1']);
+    const resources = await compact('api-resources'); assert.deepEqual(resources.resources.find((item: any) => item.name === 'widgets'), { name: 'widgets', aliases: ['wd'], namespaced: true, kind: 'Widget', verbs: ['get', 'list'], apiVersion: 'synthetic.example/v1beta1' });
+    assert.equal(resources.complete, true);
     assert.equal((await compact('get', 'wd')).widgets[0].name, 'synthetic-widget');
     const native = await run(['native', '--', 'get', 'wd', '-o', 'json']); assert.equal(native.code, 0, native.stderr); assert.equal(JSON.parse(native.stdout).items[0].metadata.name, 'synthetic-widget');
   });
@@ -206,7 +229,20 @@ try {
     ['get', 'pods', '--namespce=other'], ['native', '--', 'get', 'pods', '--profile=cpu'], ['native', '--', 'get', 'pods', '--server=https://example.invalid'],
     ['native', '--', 'exec', 'resource-008', '--', 'sh'], ['native', '--', 'get', 'pods', '--watch'], ['get', 'pods', '--chunk-size=0'],
     ['native', '--', 'scale', 'deployment/demo', '--replicas=2'], ['native', '--', 'create', 'token', 'demo'],
+    ['native', '--', 'rollout', 'status', 'deployment/demo'], ['native', '--', 'rollout', 'status', 'deployment/demo', '--watch=true'],
+    ['native', '--', 'get', 'pods', '--watch-only'], ['native', '--', 'get', 'pods', '--output-watch-events'], ['logs', 'resource-008', '--follow'],
   ]) await check(`pre-effect:${args.join(' ')}`, async () => { const result = await run(args); assert.notEqual(result.code, 0); assert.equal(requests.length, 0); });
+  await check('streaming-disabled', async () => {
+    const result = await run(['native', '--', 'get', 'pods', '--watch=false', '--watch-only=false', '--output-watch-events=false', '-o', 'json']);
+    assert.equal(result.code, 0, result.stderr); assert.equal(JSON.parse(result.stdout).items[0].metadata.name, 'resource-008');
+    const saved = environment.SYNTHETIC_TOKEN; environment.SYNTHETIC_TOKEN = '';
+    try {
+      const bounded = await run(['native', '--', 'rollout', 'status', 'deployment/demo', '--watch=false']);
+      assert.equal((decode(bounded.stdout) as any).error.code, 'AUTH_REQUIRED');
+      const streaming = await run(['native', '--', 'rollout', 'status', 'deployment/demo']);
+      assert.equal((decode(streaming.stdout) as any).error.code, 'USAGE');
+    } finally { environment.SYNTHETIC_TOKEN = saved!; }
+  });
   await check('generated-help-offline', async () => {
     const help = await compact('native', '--', 'get', '-Ah'); assert(help.flags.some((flag: any) => flag.name === '--namespace' && flag.short === '-n' && flag.type === 'string')); assert.equal(requests.length, 0);
   });

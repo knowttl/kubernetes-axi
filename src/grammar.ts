@@ -87,9 +87,13 @@ export function parse(args: string[]): Invocation {
   if (!command.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The command has no reviewed effect classification.');
   if (!help) {
     if (command.compatibilityLimit) throw new Failure('NOT_YET_SUPPORTED_STAGED', command.compatibilityLimit);
+    for (const flag of command.flags) {
+      if (flag.effect === 'stream' && (flags.get(flag.name) ?? flag.default) !== 'false') throw new Failure('USAGE', `--${flag.name} must be false under the isolated bounded-read policy.`, 2);
+    }
     for (const name of flags.keys()) {
       const flag = command.flags.find(flag => flag.name === name)!;
       if (!flag.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The flag has no reviewed effect classification.');
+      if (flag.effect === 'stream') continue;
       if (!['argument', 'presentation'].includes(flag.effect)) throw new Failure('USAGE', `--${flag.name} is unavailable under the isolated bounded-read policy (${flag.effect}).`, 2);
       if (flag.name === 'output' && /file[=\s]|template-file/.test(flags.get(flag.name)!)) throw new Failure('USAGE', 'File templates require a later local-file capability.', 2);
     }

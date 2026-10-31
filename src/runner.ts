@@ -63,11 +63,13 @@ const validDiscovery = ajv.compile<{ groupVersion: string; resources: Resource[]
 const validCore = ajv.compile<{ versions: string[] }>({
   type: 'object', required: ['versions'], properties: { versions: { type: 'array', minItems: 1, items: { type: 'string', pattern: '^v[0-9]+((alpha|beta)[0-9]+)?$' } } },
 });
-const validGroups = ajv.compile<{ groups: { name: string; preferredVersion: { groupVersion: string } }[] }>({
+const groupVersionSchema = { type: 'object', required: ['groupVersion'], properties: { groupVersion: { type: 'string', pattern: '^[a-z0-9][a-z0-9.-]*/v[0-9]+((alpha|beta)[0-9]+)?$' } } };
+const validGroups = ajv.compile<{ groups: { name: string; versions: { groupVersion: string }[]; preferredVersion: { groupVersion: string } }[] }>({
   type: 'object', required: ['groups'], properties: { groups: { type: 'array', items: {
-    type: 'object', required: ['name', 'preferredVersion'], properties: {
+    type: 'object', required: ['name', 'versions', 'preferredVersion'], properties: {
       name: { type: 'string', pattern: '^[a-z0-9][a-z0-9.-]*$' },
-      preferredVersion: { type: 'object', required: ['groupVersion'], properties: { groupVersion: { type: 'string', pattern: '^[a-z0-9][a-z0-9.-]*/v[0-9]+((alpha|beta)[0-9]+)?$' } } },
+      versions: { type: 'array', minItems: 1, items: groupVersionSchema },
+      preferredVersion: groupVersionSchema,
     },
   } } },
 });
@@ -106,19 +108,24 @@ export async function readCluster(identity: Identity, invocation: Invocation): P
     } catch (error) {
       const failed = error as { stderr?: string; stdout?: string; code?: string | number; killed?: boolean };
       if (failed.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw new Failure('OUTPUT_LIMIT', 'Output exceeded 4 MiB; narrow the selection.', 1, { cause: 'byte_limit' });
-      if (failed.killed || /Timeout|deadline exceeded|timed out/i.test(failed.stderr ?? '')) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded request timed out.', 1, { cause: 'timeout' });
+      if (failed.killed) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded request timed out.', 1, { cause: 'timeout' });
       if (format === 'native' && typeof failed.code === 'number') return { native: true, stdout: failed.stdout ?? '', stderr: failed.stderr ?? '', exitCode: failed.code };
       const stderr = failed.stderr ?? '';
-      if (args.includes('explain') && /openapi|schema|NotFound/i.test(stderr)) throw new Failure('SCHEMA_UNAVAILABLE', 'The selected resource schema is unavailable or invalid.', 1, { cause: 'schema' });
-      const errors: [RegExp, string, number, string][] = [
-        [/Unauthorized|must be logged in/i, 'AUTH_REQUIRED', 401, 'The selected identity was rejected.'],
-        [/Forbidden/i, 'ACCESS_DENIED', 403, 'The selected identity cannot perform this read.'],
-        [/Expired|Gone|too old resource version/i, 'RESOURCE_EXPIRED', 410, 'The continuation expired; start a new read.'],
-        [/NotFound/i, args.some(arg => arg.includes('--raw=/apis/metrics.k8s.io/')) ? 'API_UNAVAILABLE' : 'RESOURCE_NOT_FOUND', 404, 'The selected resource or API was not found.'],
-        [/404|could not find the requested resource/i, 'API_UNAVAILABLE', 404, 'The requested API is unavailable.'],
+      const reason = /^Error from server \(([^)]+)\):/m.exec(stderr)?.[1]
+        ?? (/^error: You must be logged in to the server \(Unauthorized\)/m.test(stderr) ? 'Unauthorized' : undefined);
+      const errors: [string[], string, number, string][] = [
+        [['Unauthorized'], 'AUTH_REQUIRED', 401, 'The selected identity was rejected.'],
+        [['Forbidden'], 'ACCESS_DENIED', 403, 'The selected identity cannot perform this read.'],
+        [['Expired', 'Gone'], 'RESOURCE_EXPIRED', 410, 'The continuation expired; start a new read.'],
+        [['Timeout', 'ServerTimeout'], 'UPSTREAM_TIMEOUT', 504, 'The bounded request timed out.'],
+        [['NotFound'], args.includes('explain') ? 'SCHEMA_UNAVAILABLE' : args.some(arg => arg.startsWith('--raw=/apis/metrics.k8s.io/')) ? 'API_UNAVAILABLE' : 'RESOURCE_NOT_FOUND', 404, 'The selected resource or API was not found.'],
       ];
-      for (const [pattern, code, upstreamStatus, message] of errors) if (pattern.test(stderr)) throw new Failure(code, message, 1, { upstreamStatus, cause: code });
-      if (/invalid character|unexpected end|unmarshal|invalid JSON/i.test(stderr)) throw new Failure('UPSTREAM_INVALID', 'The API returned a malformed response.', 1, { cause: 'malformed' });
+      for (const [reasons, code, upstreamStatus, message] of errors) if (reason && reasons.includes(reason)) throw new Failure(code, message, 1, { upstreamStatus, cause: code });
+      if (!reason) {
+        if (/^(?:error: )?(?:Unable to connect to the server: |net\/http: |context )[^\n]*(?:deadline exceeded|timed out|Timeout)/m.test(stderr)) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded request timed out.', 1, { cause: 'timeout' });
+        if (args.includes('explain') && /^error: (?:failed to (?:download|fetch) openapi|error loading schema)/mi.test(stderr)) throw new Failure('SCHEMA_UNAVAILABLE', 'The selected resource schema is unavailable or invalid.', 1, { cause: 'schema' });
+        if (/^error: (?:invalid character|unexpected end|[^\n]*cannot unmarshal|invalid JSON)/mi.test(stderr)) throw new Failure('UPSTREAM_INVALID', 'The API returned a malformed response.', 1, { cause: 'malformed' });
+      }
       throw new Failure('UPSTREAM_FAILED', 'The bounded Kubernetes read failed; check endpoint, TLS trust and identity.', 1, { cause: 'transport' });
     }
     retainedBytes += Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr);
@@ -151,9 +158,9 @@ export async function readCluster(identity: Identity, invocation: Invocation): P
     if (command === 'describe' || command === 'explain') return { ...provenance, text: await invoke(invocation.argv, 'text'), complete: false, bound: 'execution and byte limits' };
     const core = await raw('/api');
     const groups = await raw('/apis');
-    if (!validCore(core) || !validGroups(groups)) throw new Failure('UPSTREAM_INVALID', 'API discovery returned an invalid envelope.');
-    if (command === 'api-versions') return { ...provenance, versions: core.versions, groups: groups.groups.map(group => ({ name: group.name, preferredVersion: group.preferredVersion.groupVersion })) };
-    const candidates = [...core.versions.map(version => ({ version, prefix: `/api/${version}` })), ...groups.groups.map(group => ({ version: group.preferredVersion.groupVersion, prefix: `/apis/${group.preferredVersion.groupVersion}` }))];
+    if (!validCore(core) || !validGroups(groups) || groups.groups.some(group => !group.versions.some(version => version.groupVersion === group.preferredVersion.groupVersion) || group.versions.some(version => !version.groupVersion.startsWith(`${group.name}/`)))) throw new Failure('UPSTREAM_INVALID', 'API discovery returned an invalid envelope.');
+    if (command === 'api-versions') return { ...provenance, versions: core.versions, groups: groups.groups.map(group => ({ name: group.name, versions: group.versions.map(version => version.groupVersion), preferredVersion: group.preferredVersion.groupVersion })) };
+    const candidates = [...core.versions.map(version => ({ version, prefix: `/api/${version}` })), ...groups.groups.flatMap(group => [group.preferredVersion, ...group.versions.filter(version => version.groupVersion !== group.preferredVersion.groupVersion)].map(({ groupVersion }) => ({ version: groupVersion, prefix: `/apis/${groupVersion}` })))];
     const resources: Resource[] = [];
     const requested = invocation.home ? 'pods' : command.startsWith('top ') ? (command === 'top node' ? 'nodes' : 'pods') : invocation.positionals[0];
     for (const candidate of candidates) {
