@@ -13,15 +13,24 @@ const help = {
 export async function main(args: string[]): Promise<void> {
   let secret = '';
   const output = (value: object): void => {
-    let text = encode(value);
-    if (secret) {
-      for (const form of new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret), Buffer.from(secret).toString('base64')])) {
-        text = text.split(form).join('[REDACTED]');
+    const redact = (data: unknown): unknown => {
+      if (typeof data === 'string') {
+        let text = data;
+        if (secret) {
+          for (const form of new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret), Buffer.from(secret).toString('base64')])) {
+            text = text.split(form).join('[REDACTED]');
+          }
+        }
+        return text.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[REDACTED]')
+          .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED]');
       }
-    }
-    text = text.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[REDACTED]')
-      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED]');
-    process.stdout.write(`${text}\n`);
+      if (Array.isArray(data)) return data.map(redact);
+      if (data !== null && typeof data === 'object') {
+        return Object.fromEntries(Object.entries(data).map(([key, value]) => [key, redact(value)]));
+      }
+      return data;
+    };
+    process.stdout.write(`${encode(redact(value))}\n`);
   };
   try {
     if (args.length === 0 || (args.length === 1 && args[0] === '--help')) {

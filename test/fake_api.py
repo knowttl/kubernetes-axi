@@ -62,7 +62,7 @@ class FakeAPI:
                 if route == "/api/v1/namespaces/kube-system/pods":
                     pods = copy.deepcopy(api.pods)
                     if api.echo is not None:
-                        pods["items"][0]["metadata"]["name"] = api.echo
+                        pods["metadata"]["continue"] = api.echo
                     return self.send_json(200, pods)
                 if route in routes:
                     return self.send_json(200, routes[route])

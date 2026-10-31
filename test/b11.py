@@ -177,7 +177,20 @@ class PackagedRead(unittest.TestCase):
         forms = [secret, json.dumps(secret)[1:-1], quote(secret, safe="~()*!.'-"), base64.b64encode(secret.encode()).decode()]
         self.api.echo = "|".join(forms)
         output = self.read_pods()
-        self.assertEqual(output["pods"][0]["name"], "|".join(["[REDACTED]"] * len(forms)))
+        self.assertEqual(output["continue"], "|".join(["[REDACTED]"] * len(forms)))
+        self.assertEqual(output["pods"], [{"name": "resource-008", "namespace": "kube-system", "phase": "Running"}])
+
+    def test_CC_003_numeric_secrets_preserve_output_structure(self):
+        for secret in ["1", "18"]:
+            with self.subTest(secret=secret):
+                self.env["SELECTED_TOKEN"] = secret
+                self.api.tokens.add(secret)
+                self.addCleanup(self.api.tokens.discard, secret)
+                self.api.echo = secret
+                output = self.read_pods()
+                self.assertEqual(output["pods"], [{"name": "resource-008", "namespace": "kube-system", "phase": "Running"}])
+                self.assertEqual(output["remainingItemCount"], 18)
+                self.assertEqual(output["continue"], "[REDACTED]")
 
     def test_CC_007_missing_authentication_does_not_prompt(self):
         del self.env["SELECTED_TOKEN"]
