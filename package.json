@@ -2,9 +2,11 @@
   "name": "@knowttl/kubernetes-axi",
   "version": "0.1.0",
   "description": "Agent-facing Kubernetes CLI backed by pinned kubectl",
+  "repository": { "type": "git", "url": "git+https://github.com/knowttl/kubernetes-axi.git" },
   "type": "module",
   "engines": { "node": "24.14.0", "npm": "11.9.0" },
   "packageManager": "npm@11.9.0",
+  "publishConfig": { "access": "public" },
   "bin": { "kubernetes-axi": "bin/kubernetes-axi.js" },
   "files": ["bin", "dist", "vendor", "third-party", "THIRD_PARTY_NOTICES.md", "axi-credential.schema.json", "kubectl-pins.json"],
   "scripts": {
