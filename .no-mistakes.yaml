@@ -6,6 +6,10 @@ agent_args_override:
     - -c
     - model_reasoning_effort="medium"
 no_ci: true
+commands:
+  prepare: npm ci --offline
+  test: npm test --offline
+  lint: npm run lint --offline
 review:
   path_instructions:
     - path: "**"
