@@ -1,0 +1,13 @@
+agent: codex
+agent_args_override:
+  codex:
+    - -m
+    - gpt-6.1-sol
+    - -c
+    - model_reasoning_effort="medium"
+no_ci: true
+review:
+  path_instructions:
+    - path: "**"
+      instructions: |
+        Test quality: apply the "Test quality" rules in CONTRIBUTING.md to every added or changed test. Flag each violation as a finding naming the rule number, the test file:line and the evidence. Respect the listed exemptions. Never ask for a test to be written first or only to raise coverage.
