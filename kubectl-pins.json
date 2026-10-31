@@ -1,0 +1,18 @@
+{
+  "version": "v1.32.2",
+  "supportedServerMinors": [31, 32, 33],
+  "matrixStatus": "observational until live commissioning",
+  "decision": "kubectl pin v1.32.2 - captain-delegated (overnight), plan-named selection; revisit at commissioning.",
+  "binaries": {
+    "linux-x64": {
+      "file": "kubectl-linux-amd64",
+      "url": "https://dl.k8s.io/release/v1.32.2/bin/linux/amd64/kubectl",
+      "sha256": "4f6a959dcc5b702135f8354cc7109b542a2933c46b808b248a214c1f69f817ea"
+    },
+    "win32-x64": {
+      "file": "kubectl-windows-amd64.exe",
+      "url": "https://dl.k8s.io/release/v1.32.2/bin/windows/amd64/kubectl.exe",
+      "sha256": "cf51a1c6bf3b6ba6a5b549d1debf8aa6afb00c4c5a3d5d4bb1072f54cbe4390f"
+    }
+  }
+}
