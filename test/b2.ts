@@ -36,7 +36,7 @@ groups.groups.push(apiGroup('metrics.k8s.io', 'v1beta1'), apiGroup('synthetic.ex
 groups.groups.at(-1).versions.push({ groupVersion: 'synthetic.example/v1beta1', version: 'v1beta1' });
 const requests: string[] = [];
 const identities: string[] = [];
-const helperTokens = ['synthetic-helper-first+/=', 'synthetic-helper-renewed+/='];
+const helperTokens = ['synthetic-helper-first&+/=', 'synthetic-helper-renewed&+/='];
 let variant = '';
 let cancelRequest: (() => void) | undefined;
 let override: { path: string; envelope: Envelope | 'malformed' | 'timeout' | 'oversize' } | undefined;
@@ -223,6 +223,23 @@ try {
       assert.deepEqual(readdirSync(temporary), []);
     } finally { environment.KUBECONFIG = saved; writeFileSync(nativeFile, original); }
   }));
+  await check('CC-009-native-impersonation-refused', async () => local(async () => {
+    const original = readFileSync(nativeFile);
+    try {
+      for (const [field, value] of [['as', 'administrator'], ['as-uid', 'synthetic-uid'], ['as-groups', ['system:masters']], ['as-user-extra', { scope: ['synthetic'] }]] as const) {
+        const settings = structuredClone(nativeSettings);
+        settings.users[0]!.user[field] = value;
+        writeFileSync(nativeFile, JSON.stringify(settings));
+        for (const args of [['get', 'pods'], ['native', '--', 'get', 'pods']]) {
+          const result = await run(['--native-config', nativeFile, ...args]);
+          assert.equal(result.code, 2, result.stdout + result.stderr);
+          assert.deepEqual((decode(result.stdout) as any).error, { code: 'USAGE', message: 'Native kubeconfig impersonation is unavailable under the isolated bounded-read policy (impersonation).' });
+          assert.equal(requests.length, 0);
+          assert.deepEqual(readdirSync(temporary), []);
+        }
+      }
+    } finally { writeFileSync(nativeFile, original); }
+  }));
   await check('CC-009-native-source-edit', async () => local(async () => {
     const original = readFileSync(nativeFile);
     const decoy = readFileSync(decoyFile);
@@ -259,6 +276,11 @@ try {
       const native = await run(['--native-config', nativeFile, '--trust-exec', 'native', '--', 'logs', 'resource-008']);
       assert.equal(native.code, 0, native.stdout + native.stderr);
       assert.equal(native.stdout, Array(6).fill('[REDACTED]').join('|'));
+      writeFileSync(counter, '0');
+      override = { path: '/api/v1/namespaces/kube-system/pods', envelope: { status: 200, headers: {}, body: { kind: 'PodList', apiVersion: 'v1', metadata: {}, items: helperTokens.map(token => ({ metadata: { name: 'synthetic-pod', namespace: 'kube-system', annotations: { synthetic: token } } })) } } };
+      const nativeJson = await run(['--native-config', nativeFile, '--trust-exec', 'native', '--', 'get', 'pods', '-o', 'json']);
+      assert.equal(nativeJson.code, 0, nativeJson.stdout + nativeJson.stderr);
+      assert.deepEqual(JSON.parse(nativeJson.stdout).items.map((item: any) => item.metadata.annotations.synthetic), ['[REDACTED]', '[REDACTED]']);
       environment.SYNTHETIC_HELPER_FAILURE = 'true';
       const failure = await run(['--native-config', nativeFile, '--trust-exec', 'native', '--', 'get', 'pods']);
       assert.notEqual(failure.code, 0); assert(!`${failure.stdout}${failure.stderr}`.includes(helperTokens[0]!));

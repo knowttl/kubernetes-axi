@@ -55,6 +55,7 @@ export async function nativeConfig(binary: string, selection: string, context: s
   if (!selected || !clusterEntry?.cluster || !userEntry?.user) throw new Failure('CONFIG_INVALID', 'Select an existing native context with a cluster and identity.');
   const cluster = { ...clusterEntry.cluster };
   const user = { ...userEntry.user };
+  if (['as', 'as-uid', 'as-groups', 'as-user-extra'].some(field => Object.hasOwn(user, field))) throw new Failure('USAGE', 'Native kubeconfig impersonation is unavailable under the isolated bounded-read policy (impersonation).', 2);
   const server = new URL(String(cluster.server));
   if (server.protocol !== 'https:' || server.username || server.password || cluster['insecure-skip-tls-verify'] || cluster['proxy-url']) throw new Failure('CONFIG_INVALID', 'Native contexts require verified HTTPS without a proxy override.');
   if (user['auth-provider'] || user.tokenFile || user.username || user.password) throw new Failure('CONFIG_INVALID', 'Use native token, certificate or a trusted ExecCredential helper.');

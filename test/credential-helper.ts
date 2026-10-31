@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const counter = process.env.SYNTHETIC_HELPER_COUNTER!;
-const tokens = ['synthetic-helper-first+/=', 'synthetic-helper-renewed+/='];
+const tokens = ['synthetic-helper-first&+/=', 'synthetic-helper-renewed&+/='];
 let count = 0;
 try { count = Number(readFileSync(counter, 'utf8')); }
 catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
