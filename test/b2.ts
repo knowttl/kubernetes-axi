@@ -1,0 +1,232 @@
+import assert from 'node:assert/strict';
+import { execFile, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { createServer } from 'node:https';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
+import { decode } from '@toon-format/toon';
+
+const execute = promisify(execFile);
+const root = resolve(import.meta.dirname, '..');
+const pack = process.argv.includes('--pack') ? resolve(process.argv[process.argv.indexOf('--pack') + 1]!) : join(root, 'evidence');
+// Running the whole harness in an empty network namespace denies outbound calls
+// for Node, npm and every real kubectl child, including any attempted DNS lookup.
+assert.equal(process.platform, 'linux', 'B2 native test evidence currently requires Linux network namespaces; other hosts remain pending');
+assert.equal(readFileSync('/proc/net/route', 'utf8').trim().split('\n').length, 1, 'Run under unshare --user --map-root-user --net with only loopback enabled');
+const directory = mkdtempSync(join(tmpdir(), 'kubernetes-axi-b2-'));
+const hashes = JSON.parse(readFileSync(join(root, 'evidence/fixture-hashes.json'), 'utf8')) as Record<string, string>;
+for (const [file, hash] of Object.entries(hashes)) assert.equal(createHash('sha256').update(readFileSync(join(pack, file))).digest('hex'), hash, file);
+interface Envelope { status: number; headers: Record<string, string>; body: any }
+const fixtures = Object.fromEntries(Object.keys(hashes).map(file => [file.split('/').at(-1)!.replace('.json', ''), JSON.parse(readFileSync(join(pack, file), 'utf8')) as Envelope]));
+const fixture = (id: string): Envelope => structuredClone(fixtures[id]!);
+const openssl = (...args: string[]): void => { execFileSync('openssl', args, { cwd: directory, stdio: 'ignore' }); };
+openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt', '-days', '1', '-subj', '/CN=synthetic-ca');
+openssl('req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'server.key', '-out', 'server.csr', '-subj', '/CN=localhost', '-addext', 'subjectAltName=IP:127.0.0.1');
+openssl('x509', '-req', '-in', 'server.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial', '-out', 'server.crt', '-days', '1', '-copy_extensions', 'copy');
+
+const apiGroup = (name: string, version: string) => ({ name, versions: [{ groupVersion: `${name}/${version}`, version }], preferredVersion: { groupVersion: `${name}/${version}`, version } });
+const resource = (name: string, kind: string, namespaced: boolean, shortNames: string[] = []) => ({ name, singularName: kind.toLowerCase(), kind, namespaced, shortNames, verbs: ['get', 'list'] });
+const discovery = (groupVersion: string, resources: object[]) => ({ kind: 'APIResourceList', apiVersion: 'v1', groupVersion, resources });
+const core = discovery('v1', [resource('pods', 'Pod', true, ['po']), resource('namespaces', 'Namespace', false, ['ns']), resource('nodes', 'Node', false, ['no']), resource('events', 'Event', true, ['ev'])]);
+const groups = fixture('P-003').body;
+groups.groups.push(apiGroup('metrics.k8s.io', 'v1beta1'), apiGroup('synthetic.example', 'v1'));
+const requests: string[] = [];
+let variant = '';
+let override: { path: string; envelope: Envelope | 'malformed' | 'timeout' | 'oversize' } | undefined;
+const server = createServer({ key: readFileSync(join(directory, 'server.key')), cert: readFileSync(join(directory, 'server.crt')) }, (request, response) => {
+  requests.push(request.url!);
+  const url = new URL(request.url!, 'https://127.0.0.1');
+  const path = url.pathname;
+  const send = (envelope: Envelope): void => {
+    response.writeHead(envelope.status, { 'Content-Type': 'application/json', ...envelope.headers });
+    response.end(typeof envelope.body === 'string' ? envelope.body : JSON.stringify(envelope.body));
+  };
+  const json = (body: any): void => send({ status: 200, headers: { 'Content-Type': 'application/json' }, body });
+  const page = (id: string): void => {
+    const envelope = fixture(id);
+    if (url.searchParams.has('continue')) envelope.body = { ...envelope.body, metadata: { resourceVersion: envelope.body.metadata.resourceVersion }, items: [] };
+    send(envelope);
+  };
+  if (request.headers.authorization !== 'Bearer synthetic-selected-token') return send({ status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } });
+  if (override?.path === path) {
+    if (override.envelope === 'timeout') return; // Server remains open until the client's real deadline cancels it.
+    if (override.envelope === 'malformed') { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{broken'); return; }
+    if (override.envelope === 'oversize') { response.writeHead(200); response.end('x'.repeat(5 * 1024 * 1024)); return; }
+    return send(override.envelope);
+  }
+  if (path === '/version') return send(fixture('P-001'));
+  if (path === '/api') return send(fixture('P-002'));
+  if (path === '/apis') return json(groups);
+  if (path === '/api/v1') return json(core);
+  if (path === '/apis/apps/v1') return json(discovery('apps/v1', [resource('deployments', 'Deployment', true, ['deploy'])]));
+  if (path === '/apis/metrics.k8s.io/v1beta1') return json(discovery('metrics.k8s.io/v1beta1', [resource('nodes', 'NodeMetrics', false), resource('pods', 'PodMetrics', true)]));
+  if (path === '/apis/synthetic.example/v1') return json(discovery('synthetic.example/v1', [resource('widgets', 'Widget', true, ['wd'])]));
+  if (path.split('/').length === 4 && path.startsWith('/apis/')) return json(discovery(path.slice(6), []));
+  if (path === '/api/v1/namespaces') return page(variant === 'namespace-filter' ? 'P-011' : 'P-004');
+  if (path === '/api/v1/nodes') {
+    if (variant === 'metrics') return json({ kind: 'NodeList', apiVersion: 'v1', metadata: {}, items: [{ metadata: { name: 'synthetic-node' }, status: { allocatable: { cpu: '1', memory: '1Gi' }, capacity: { cpu: '1', memory: '1Gi' } } }] });
+    return page('P-005');
+  }
+  if (path === '/api/v1/namespaces/kube-system/events') return send(fixture('P-007'));
+  if (path === '/apis/apps/v1/namespaces/default/deployments') return send(fixture('P-008'));
+  if (path === '/api/v1/namespaces/kube-system/pods/resource-008/log') return send(fixture('P-010'));
+  if (path === '/api/v1/namespaces/kube-system/pods/axi-design-nonexistent-probe') return send(fixture('P-012'));
+  if (path === '/api/v1/namespaces/kube-system/pods/resource-008') return json({ apiVersion: 'v1', kind: 'Pod', ...fixture('P-006').body.items[0] });
+  if (path === '/api/v1/namespaces/kube-system/pods') return page('P-006');
+  if (path === '/apis/metrics.k8s.io/v1beta1/nodes') return send(fixture('metrics-node-success'));
+  if (path === '/apis/metrics.k8s.io/v1beta1/namespaces/synthetic-space/pods') return send(fixture('metrics-pod-success'));
+  if (path === '/apis/synthetic.example/v1/namespaces/kube-system/widgets') return json({ kind: 'WidgetList', apiVersion: 'synthetic.example/v1', metadata: {}, items: [{ metadata: { name: 'synthetic-widget', namespace: 'kube-system' } }] });
+  if (path === '/api/v1/namespaces/decoy/pods') return json({ kind: 'PodList', apiVersion: 'v1', metadata: {}, items: [{ metadata: { name: 'decoy-pod', namespace: 'decoy' }, status: { phase: 'Pending' } }] });
+  if (path === '/openapi/v3') return json({ paths: { 'api/v1': { serverRelativeURL: '/openapi/v3/api/v1?hash=synthetic' } } });
+  if (path === '/openapi/v3/api/v1') return json({ openapi: '3.0.0', info: { title: 'Synthetic schema', version: 'v1' }, paths: {
+    '/api/v1/namespaces/{namespace}/pods': { get: { 'x-kubernetes-group-version-kind': { group: '', version: 'v1', kind: 'Pod' }, responses: { '200': { description: 'A pod list' } } } },
+  }, components: { schemas: {
+    'io.k8s.api.core.v1.Pod': { type: 'object', description: 'Synthetic pod schema', 'x-kubernetes-group-version-kind': [{ group: '', version: 'v1', kind: 'Pod' }], properties: { metadata: { type: 'object', description: 'Object identity' }, spec: { type: 'object', description: 'Pod specification' } } },
+  } } });
+  send({ status: 404, headers: { 'Content-Type': 'application/json' }, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', message: 'NotFound', code: 404 } });
+});
+server.requestTimeout = 15_000;
+await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+const address = server.address();
+assert(address && typeof address !== 'string');
+const config = join(directory, 'config.json');
+writeFileSync(config, JSON.stringify({ version: 1, defaultProfile: 'selected', profiles: { selected: {
+  origin: `https://127.0.0.1:${address.port}`, auth: 'token', namespace: 'kube-system', certificateAuthority: readFileSync(join(directory, 'ca.crt'), 'utf8'), token: { env: 'SYNTHETIC_TOKEN' },
+} } }), { mode: 0o600 });
+const prefix = join(directory, 'installed');
+const npm = 'npm';
+const packed = JSON.parse(execFileSync(npm, ['pack', '--offline', '--json', '--pack-destination', directory], { cwd: root, encoding: 'utf8' }));
+execFileSync(npm, ['install', '--offline', '--prefix', prefix, '--ignore-scripts', '--no-audit', '--no-fund', join(directory, packed[0].filename)], { stdio: 'pipe' });
+const installed = join(prefix, 'node_modules/@knowttl/kubernetes-axi');
+const cli = join(installed, 'bin/kubernetes-axi.js');
+const temporary = join(directory, 'invocations');
+mkdirSync(temporary, { mode: 0o700 });
+const environment: NodeJS.ProcessEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('KUBERNETES_') && key !== 'KUBECONFIG')),
+  HOME: directory, USERPROFILE: directory, APPDATA: directory, XDG_CONFIG_HOME: directory,
+  TMPDIR: temporary, TMP: temporary, TEMP: temporary,
+  KUBERNETES_AXI_CONFIG: config, SYNTHETIC_TOKEN: 'synthetic-selected-token', KUBECONFIG: join(directory, 'poison-kubeconfig'),
+  KUBERNETES_AXI_READ_ONLY: 'true',
+};
+const cases: { case: string; outcome: string }[] = [];
+const run = async (args: string[], executable = cli): Promise<{ code: number; stdout: string; stderr: string }> => {
+  try { const result = await execute('node', [executable, ...args], { env: environment, timeout: 20_000, maxBuffer: 8 * 1024 * 1024 }); return { code: 0, ...result }; }
+  catch (error) { const result = error as { code: number; stdout: string; stderr: string }; return { code: result.code, stdout: result.stdout, stderr: result.stderr }; }
+};
+const check = async (id: string, test: () => Promise<void>): Promise<void> => {
+  requests.length = 0; override = undefined; variant = '';
+  try { await test(); cases.push({ case: id, outcome: 'pass' }); }
+  catch (error) { cases.push({ case: id, outcome: 'failure' }); console.error(id, error); process.exitCode = 1; }
+};
+const compact = async (...args: string[]): Promise<any> => {
+  const result = await run(args); assert.equal(result.code, 0, result.stdout); assert.equal(result.stderr, ''); return decode(result.stdout);
+};
+try {
+  const lists = [
+    ['AC-004', 'P-004', 'namespaces', undefined, 'phase'],
+    ['AC-005', 'P-005', 'nodes', undefined, 'ready'],
+    ['AC-006', 'P-006', 'pods', 'kube-system', 'phase'],
+    ['AC-007', 'P-007', 'events', 'kube-system', undefined],
+    ['AC-008', 'P-008', 'deployments', 'default', 'desired'],
+  ] as const;
+  for (const [id, retained, type, namespace, field] of lists) await check(id, async () => {
+    const args = ['get', type, ...(namespace ? ['-n', namespace] : [])];
+    const expected = fixture(retained).body;
+    const output = await compact(...args);
+    assert.deepEqual(output[type].map((item: any) => item.name), expected.items.map((item: any) => item.metadata.name));
+    assert.equal(output.continue, expected.metadata.continue ?? '');
+    assert.equal(output.complete, !expected.metadata.continue);
+    if (field === 'phase') assert.equal(output[type][0].phase, expected.items[0].status.phase);
+    if (field === 'ready') assert.equal(output[type][0].ready, expected.items[0].status.conditions.find((condition: any) => condition.type === 'Ready').status);
+    if (field === 'desired') assert.equal(output[type][0].desired, expected.items[0].spec.replicas);
+    const native = await run(['native', '--', ...args, '-o', 'json']);
+    assert.equal(native.code, 0, native.stderr);
+    assert.deepEqual(JSON.parse(native.stdout).items.map((item: any) => item.metadata.name), expected.items.map((item: any) => item.metadata.name));
+  });
+  await check('AC-011-PRESENT', async () => {
+    const output = await compact('get', 'pod', 'resource-008');
+    assert.deepEqual(output.pods, [{ name: 'resource-008', namespace: 'kube-system', phase: 'Running' }]);
+    const native = await run(['native', '--', 'get', 'pod', 'resource-008', '-o', 'json']);
+    assert.equal(native.code, 0, native.stderr); assert.equal(JSON.parse(native.stdout).metadata.name, 'resource-008');
+  });
+  for (const [id, args, path, envelope, code] of [
+    ['AC-011', ['get', 'pods', 'axi-design-nonexistent-probe'], '/api/v1/namespaces/kube-system/pods/axi-design-nonexistent-probe', fixture('P-012'), 'RESOURCE_NOT_FOUND'],
+    ['AC-009', ['top', 'node'], '/apis/metrics.k8s.io/v1beta1/nodes', fixture('P-009'), 'API_UNAVAILABLE'],
+    ['denied', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', { status: 403, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Forbidden', message: 'Forbidden', code: 403 } }, 'ACCESS_DENIED'],
+    ['expiry', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', { status: 410, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Expired', message: 'Expired', code: 410 } }, 'RESOURCE_EXPIRED'],
+    ['credential-expiry', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', { status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } }, 'AUTH_REQUIRED'],
+    ['schema-unavailable', ['explain', 'pods'], '/openapi/v3/api/v1', { status: 404, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', message: 'NotFound', code: 404 } }, 'SCHEMA_UNAVAILABLE'],
+    ['malformed', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', 'malformed', 'UPSTREAM_INVALID'],
+    ['timeout', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', 'timeout', 'UPSTREAM_TIMEOUT'],
+    ['byte-limit', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', 'oversize', 'OUTPUT_LIMIT'],
+  ] as const) await check(id, async () => {
+    override = { path, envelope: envelope as Envelope | 'malformed' | 'timeout' | 'oversize' };
+    const result = await run([...args]); assert.equal(result.code, 1, result.stdout); assert.equal((decode(result.stdout) as any).error.code, code);
+    const native = await run(['native', '--', ...args]); assert.notEqual(native.code, 0); assert(native.stdout || native.stderr);
+  });
+  for (const [type, namespace, expected] of [
+    ['node', undefined, { name: 'synthetic-node', cpu: '125m', memory: '64Mi' }],
+    ['pod', 'synthetic-space', { name: 'synthetic-pod', namespace: 'synthetic-space', cpu: '50m', memory: '48Mi' }],
+  ] as const) await check(`AC-009-${type}`, async () => {
+    variant = 'metrics';
+    const args = ['top', type, ...(namespace ? ['-n', namespace] : [])];
+    assert.deepEqual((await compact(...args)).metrics, [expected]);
+    const native = await run(['native', '--', ...args]); assert.equal(native.code, 0, native.stderr);
+    assert.match(native.stdout, new RegExp(`${expected.name}\\s+${expected.cpu}`)); assert(native.stdout.includes(expected.memory));
+  });
+  await check('AC-010', async () => {
+    assert.equal((await compact('-n', 'kube-system', 'logs', 'resource-008')).logs, fixture('P-010').body);
+    const native = await run(['native', '--', 'logs', 'resource-008']); assert.equal(native.code, 0, native.stderr); assert.equal(native.stdout, fixture('P-010').body);
+  });
+  await check('AC-002-003-026', async () => {
+    const discovery = await compact('api-versions'); assert.deepEqual(discovery.versions, fixture('P-002').body.versions); assert(discovery.groups.some((group: any) => group.name === 'apps' && group.preferredVersion === 'apps/v1'));
+    const resources = await compact('api-resources'); assert.deepEqual(resources.resources.find((item: any) => item.name === 'widgets'), { name: 'widgets', aliases: ['wd'], namespaced: true, kind: 'Widget', verbs: ['get', 'list'], apiVersion: 'synthetic.example/v1' });
+    assert.equal((await compact('get', 'wd')).widgets[0].name, 'synthetic-widget');
+    const native = await run(['native', '--', 'get', 'wd', '-o', 'json']); assert.equal(native.code, 0, native.stderr); assert.equal(JSON.parse(native.stdout).items[0].metadata.name, 'synthetic-widget');
+  });
+  await check('AC-025', async () => {
+    const output = await compact('explain', 'pods', '--api-version=v1', '--output=plaintext'); assert.match(output.text, /Synthetic pod schema/);
+    const native = await run(['native', '--', 'explain', 'pods', '--api-version=v1', '--output=plaintext']); assert.equal(native.code, 0, native.stderr); assert.match(native.stdout, /Synthetic pod schema/);
+  });
+  await check('namespace-decoys', async () => {
+    const selected = await compact('get', 'pods', '-n', 'kube-system'); const decoy = await compact('get', 'pods', '-n', 'decoy'); assert.equal(selected.pods[0].name, 'resource-008'); assert.equal(decoy.pods[0].name, 'decoy-pod');
+    override = { path: '/api/v1/namespaces/kube-system/pods', envelope: { status: 200, headers: {}, body: { kind: 'PodList', apiVersion: 'v1', metadata: {}, items: [{ metadata: { name: 'decoy-pod', namespace: 'decoy' } }] } } };
+    const result = await run(['get', 'pods']); assert.equal((decode(result.stdout) as any).error.code, 'UPSTREAM_INVALID');
+  });
+  await check('AC-011-filtered-page', async () => { variant = 'namespace-filter'; const output = await compact('get', 'namespaces', '-l', 'name=resource-016'); assert.equal(output.namespaces[0].name, 'resource-016'); assert.equal(output.continue, 'opaque-page-021'); assert(requests.some(path => path.includes('labelSelector=name%3Dresource-016'))); });
+  await check('AC-HOME-001', async () => { const home = await compact(); assert.equal(home.source, 'file:selected'); assert.equal(home.context, 'selected'); assert.equal(home.namespace, 'kube-system'); assert.equal(home.kubectlVersion, 'v1.32.2'); assert.equal(home.pods[0].name, 'resource-008'); assert.equal(home.complete, false); });
+  await check('home-missing-auth', async () => {
+    const saved = environment.SYNTHETIC_TOKEN; environment.SYNTHETIC_TOKEN = '';
+    try { const result = await run([]); assert.equal((decode(result.stdout) as any).error.code, 'AUTH_REQUIRED'); assert.equal(requests.length, 0); }
+    finally { environment.SYNTHETIC_TOKEN = saved!; }
+  });
+  for (const args of [
+    ['get', 'pods', '--namespce=other'], ['native', '--', 'get', 'pods', '--profile=cpu'], ['native', '--', 'get', 'pods', '--server=https://example.invalid'],
+    ['native', '--', 'exec', 'resource-008', '--', 'sh'], ['native', '--', 'get', 'pods', '--watch'], ['get', 'pods', '--chunk-size=0'],
+    ['native', '--', 'scale', 'deployment/demo', '--replicas=2'], ['native', '--', 'create', 'token', 'demo'],
+  ]) await check(`pre-effect:${args.join(' ')}`, async () => { const result = await run(args); assert.notEqual(result.code, 0); assert.equal(requests.length, 0); });
+  await check('generated-help-offline', async () => {
+    const help = await compact('native', '--', 'get', '-Ah'); assert(help.flags.some((flag: any) => flag.name === '--namespace' && flag.short === '-n' && flag.type === 'string')); assert.equal(requests.length, 0);
+  });
+  await check('diff-staged-limit', async () => {
+    const result = await run(['native', '--', 'diff', '-f', 'unopened.yaml']);
+    assert.equal((decode(result.stdout) as any).error.code, 'NOT_YET_SUPPORTED_STAGED'); assert.equal(requests.length, 0);
+  });
+  await check('ordered-repeat-flags', async () => {
+    const native = await run(['--profile', 'selected', 'native', '--', 'get', 'pods', '-n', 'decoy', '-n', 'kube-system', '-o', 'json']); assert.equal(native.code, 0, native.stderr); assert.equal(JSON.parse(native.stdout).items[0].metadata.namespace, 'kube-system');
+  });
+  await check('stale-metadata', async () => {
+    const path = join(installed, 'command-metadata.json'); const saved = readFileSync(path);
+    try { writeFileSync(path, Buffer.concat([saved, Buffer.from(' ')])); const result = await run(['get', 'pods']); assert.equal((decode(result.stdout) as any).error.code, 'METADATA_STALE'); assert.equal(requests.length, 0); }
+    finally { writeFileSync(path, saved); }
+  });
+} finally {
+  server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
+  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
+    packageSha256: createHash('sha256').update(readFileSync(join(directory, packed[0].filename))).digest('hex'),
+    kubectlPins: JSON.parse(readFileSync(join(installed, 'kubectl-pins.json'), 'utf8')),
+    publicPaths: ['installed compact CLI', 'installed native kubectl route'], network: 'isolated Linux network namespace; loopback only', fixtureHashes: hashes, cases, pending: ['Artium B2.2 path pending stage-1 gate', 'native Windows commissioning'] }, null, 2));
+  rmSync(directory, { recursive: true, force: true });
+}

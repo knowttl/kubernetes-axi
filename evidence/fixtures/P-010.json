@@ -1,0 +1,8 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "text/plain"
+  },
+  "body": "2026-10-30T20:00:00Z sample log line 1\n2026-10-30T20:00:00Z sample log line 2\n2026-10-30T20:00:00Z sample log line 3\n2026-10-30T20:00:00Z sample log line 4\n2026-10-30T20:00:00Z sample log line 5\n",
+  "sanitization": "Resource identities, IP addresses, UUIDs and continuation values replaced consistently. Annotation values, command arguments and literal environment values removed. JSON keys and scalar types retained. Log message content and timestamps replaced, line count and text response retained."
+}

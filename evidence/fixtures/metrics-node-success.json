@@ -1,0 +1,24 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "apiVersion": "metrics.k8s.io/v1beta1",
+    "kind": "NodeMetricsList",
+    "metadata": {},
+    "items": [
+      {
+        "metadata": {
+          "name": "synthetic-node"
+        },
+        "timestamp": "2026-01-01T00:00:00Z",
+        "window": "30s",
+        "usage": {
+          "cpu": "125m",
+          "memory": "64Mi"
+        }
+      }
+    ]
+  }
+}

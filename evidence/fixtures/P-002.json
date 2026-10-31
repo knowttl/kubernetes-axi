@@ -1,0 +1,19 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "kind": "APIVersions",
+    "versions": [
+      "v1"
+    ],
+    "serverAddressByClientCIDRs": [
+      {
+        "clientCIDR": "198.51.100.10/0",
+        "serverAddress": "198.51.100.10:6443"
+      }
+    ]
+  },
+  "sanitization": "Resource identities, IP addresses, UUIDs and continuation values replaced consistently. Annotation values, command arguments and literal environment values removed. JSON keys and scalar types retained."
+}

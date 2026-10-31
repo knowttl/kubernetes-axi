@@ -1,0 +1,16 @@
+{
+  "fixtures/P-001.json": "5bb68b565b647ad87f70eead7b04f53392dbbd200e64eb5f9a435328ec4bdb63",
+  "fixtures/P-002.json": "d403fa39d7c34ab4a86613bb4846b670a3a26e2565109d4bf26cd3df7112d352",
+  "fixtures/P-003.json": "00bbc9ec95ae13b10d706db5d7cf4e128226954780e1eb2c2561fba387cdb205",
+  "fixtures/P-004.json": "244faaad7d4994ebceab6f5b56076ba058b7913efb47d004992512417dccfd6e",
+  "fixtures/P-005.json": "7eb7d5d0d467a3430352fa02485c06f0fea1bd2d00f264d750baa050f089dc07",
+  "fixtures/P-006.json": "22ab7c898cedb6ae531887333fd28d56718d12ccb8f782bdd01573f0750ccf94",
+  "fixtures/P-007.json": "8bb570fe8d82fbe63856ab7006e37b979ba95a182e1430c2381d43543bdedca9",
+  "fixtures/P-008.json": "3a625ea696d1f108cffd6cc37e3c6f39c3d259848a23669760c491d087475bde",
+  "fixtures/P-009.json": "e621926f7be5e83502d80dfd4a806f1857ab0b01e6b2d67025430d0d31572379",
+  "fixtures/P-010.json": "39a292e77aa1033531a8934b84ae62d0ee29b25c04bccb98bbf3767dad7e5e5e",
+  "fixtures/P-011.json": "a1f806a20ccb666aa29435d361ac2ab16eeea82da0f75a37f6a9a82dd73372de",
+  "fixtures/P-012.json": "a3557b31a773eb7a4760d174125598bb92255a846ec0ef5b828f4af5a2d755aa",
+  "fixtures/metrics-node-success.json": "caf2046873608ba5ba54cbca907ed1254dae2b915c059e9fee1147705bf743f1",
+  "fixtures/metrics-pod-success.json": "f1c5f8a4b36d21facd4cffa03b7017314147b9dcac4e127d445cd47c635d2d32"
+}

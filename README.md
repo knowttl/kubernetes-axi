@@ -1,19 +1,35 @@
 # kubernetes-axi
 
 An agent-facing TypeScript CLI that runs pinned kubectl with an isolated identity.
-This first development milestone implements **Plan task B1.1**, a server-version read and compact pod list through the installed standalone package.
-Artium integration, complete command coverage and native platform commissioning belong to later plan tasks and remain pending.
+The standalone package implements B1.1 and the bounded reads and generated command policy in B2.1 and B2.2.
+Artium integration and native Windows commissioning remain pending their separate stage gates.
 
 ```text
 kubernetes-axi version --profile <name>
 kubernetes-axi get pods --profile <name> --namespace <namespace>
+kubernetes-axi get deployments -n <namespace>
+kubernetes-axi top node
+kubernetes-axi top pod -n <namespace>
+kubernetes-axi logs <pod> -n <namespace>
+kubernetes-axi native -- get pods -n <namespace> -o json
 ```
 
 Output is TOON.
 Use `--help` for the current command surface, or `--version` for the package version without loading the command graph.
-Pod output retains name, namespace, phase, continuation token, resource version and remaining item count.
-This milestone performs one bounded list and does not follow the continuation token automatically.
-It uses kubectl discovery followed by kubectl's raw GET transport for a page limited to 100 pods.
+Running without arguments shows the selected source, isolated context, namespace, compatible binary and a bounded live pod summary.
+Compact reads discover resource names, aliases, scope and kinds dynamically, including custom resources.
+Pod output retains name, namespace and phase; nodes report readiness, deployments report desired and available replicas, and metrics aggregate CPU and memory.
+Lists retain continuation token, resource version and remaining item count.
+Empty events are successful empty lists.
+Compact lists request one page of at most 100 objects and do not follow continuation tokens automatically.
+Inspect `complete`, `truncated` and `continue` before treating a result as complete.
+An oversized server page is truncated with `complete: false`.
+Named reads retain NotFound failures; denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits have distinct error codes.
+Errors retain the upstream status where available.
+Each operation has a 15-second budget, at most 64 child invocations, a 5-second default request timeout, a 10-second child limit and a 4 MiB retained-output limit.
+Logs preserve text and default to 100 trailing lines and 65,536 bytes; a bounded log snapshot never claims completeness.
+Use `get <resource> [name] -o json` for compact JSON, or the native route for upstream presentation and ordered arguments.
+Native stdout, stderr and exit status are preserved after redaction, with the same time and byte bounds.
 Native `kubectl get pods` consumes continuation tokens even when chunking is disabled, so the bounded read retains the original page state explicitly.
 
 ## Install
@@ -41,6 +57,8 @@ Dependency installation uses the npm registry; Kubernetes verification stays loc
 npm ci
 npm run check
 python3 scripts/verify.py task B1.1 --mode offline --pack evidence
+python3 scripts/verify.py task B2.1 --mode offline --pack evidence
+python3 scripts/verify.py task B2.2 --mode offline --pack evidence
 ```
 
 Verification packs the product, installs that tarball into an isolated temporary prefix, and executes its public CLI.
@@ -48,6 +66,8 @@ Only the external Kubernetes API is fake.
 It uses a verified TLS loopback server, two synthetic token identities and a synthetic client certificate.
 Discovery responses are synthetic; see [evidence/README.md](evidence/README.md) for retained response provenance and the fixture integrity source.
 The harness binds only 127.0.0.1, constructs all upstream URLs itself and accepts no external upstream endpoint.
+`npm test` runs all children in a Linux user/network namespace with only loopback enabled, denying outbound network access at process level.
+It requires `unshare` and `ip`; other platform commissioning remains pending.
 Live modes are rejected.
 
 The verification report records individual cases, native OS, package digest, fixture hashes and kubectl pins.
@@ -72,6 +92,43 @@ Release Please opens release PRs on `main`, starting at 0.1.0.
 Merging a release PR creates the GitHub release and runs the release workflow's clean install, checks and public npm publish with provenance.
 Configure the npm trusted publisher for `@knowttl/kubernetes-axi` with owner `knowttl`, repository `kubernetes-axi` and workflow `release-please.yml` before releasing.
 The workflow uses GitHub OIDC without an npm token.
+
+## Generated grammar and staged capabilities
+
+[command-metadata.json](command-metadata.json) is extracted from the pinned `k8s.io/kubectl@v0.32.2` Cobra command tree and its logging registration.
+It includes 109 entries: the 106 baseline command paths plus the root, hidden alpha group and default help command.
+Every entry includes inherited flags, short aliases, actual pflag types and an effect classification.
+[effect-policy.json](effect-policy.json) classifies every exact command path and flag name; generation refuses new, unclassified entries.
+The checked-in module checksum lock verifies public upstream dependencies.
+Changing the binary pin requires a reviewed metadata and policy update.
+Runtime digest checks refuse stale metadata before credential resolution or API calls.
+
+```text
+npm run generate:metadata
+npm run check:metadata
+```
+
+Generation requires Go 1.23.5 and the pinned public module dependencies, which may be fetched during setup.
+`check:metadata` uses the populated module cache with GOPROXY disabled and checks generated metadata, skill and optional hook guidance.
+`npm test` runs this freshness check under outbound deny.
+The generator uses a temporary Go adapter to inspect the upstream types; no third-party source is copied into the product.
+
+Unknown flags are rejected before effects.
+Compact reads reject unsupported flags explicitly; the native route preserves repeated flags and the native `--` boundary.
+AXI `--profile` selects an identity before `native --`; upstream `--profile` after that delimiter is classified as profiling output and refused.
+Credential, server, impersonation, TLS-bypass, raw-route, filesystem and streaming options are refused by this milestone's policy.
+Mutations, local config changes, arbitrary execution, transfers and connections remain staged for their later capabilities.
+Diff has an approved staged compatibility limit: `NOT_YET_SUPPORTED_STAGED`, before reading a manifest or invoking a helper.
+When its later file/helper capability is implemented, native diff must retain exit 0 for no differences, 1 for differences and greater than 1 for failure.
+
+Optional [session hook guidance](docs/hooks.md) provides the bounded home view to Claude Code, Codex or OpenCode after explicit opt-in.
+The generated [installable skill](skills/kubernetes-axi/SKILL.md) is an alternative discovery path:
+
+```text
+npx skills add knowttl/kubernetes-axi --skill kubernetes-axi
+```
+
+Package installation, ordinary reads and tests never install hooks.
 
 ## Isolated credentials
 

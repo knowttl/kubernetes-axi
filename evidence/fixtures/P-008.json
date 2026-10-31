@@ -1,0 +1,480 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "kind": "DeploymentList",
+    "apiVersion": "apps/v1",
+    "metadata": {
+      "resourceVersion": "145743580"
+    },
+    "items": [
+      {
+        "metadata": {
+          "name": "resource-014",
+          "namespace": "default",
+          "uid": "resource-015",
+          "resourceVersion": "145374296",
+          "generation": 2,
+          "creationTimestamp": "2025-03-30T19:32:16Z",
+          "labels": {
+            "app.kubernetes.io/instance": "resource-014-default",
+            "app.kubernetes.io/managed-by": "Helm",
+            "app.kubernetes.io/name": "resource-014",
+            "helm.sh/chart": "resource-014-34.4.1"
+          },
+          "annotations": {
+            "deployment.kubernetes.io/revision": "[sanitized annotation value]",
+            "meta.helm.sh/release-name": "[sanitized annotation value]",
+            "meta.helm.sh/release-namespace": "[sanitized annotation value]"
+          },
+          "managedFields": [
+            {
+              "manager": "kubectl",
+              "operation": "Update",
+              "apiVersion": "apps/v1",
+              "fieldsType": "FieldsV1",
+              "fieldsV1": {
+                "f:spec": {
+                  "f:replicas": {}
+                }
+              },
+              "subresource": "scale"
+            },
+            {
+              "manager": "helm",
+              "operation": "Update",
+              "apiVersion": "apps/v1",
+              "time": "2025-03-30T19:32:16Z",
+              "fieldsType": "FieldsV1",
+              "fieldsV1": {
+                "f:metadata": {
+                  "f:annotations": {
+                    ".": {},
+                    "f:meta.helm.sh/release-name": {},
+                    "f:meta.helm.sh/release-namespace": {}
+                  },
+                  "f:labels": {
+                    ".": {},
+                    "f:app.kubernetes.io/instance": {},
+                    "f:app.kubernetes.io/managed-by": {},
+                    "f:app.kubernetes.io/name": {},
+                    "f:helm.sh/chart": {}
+                  }
+                },
+                "f:spec": {
+                  "f:progressDeadlineSeconds": {},
+                  "f:revisionHistoryLimit": {},
+                  "f:selector": {},
+                  "f:strategy": {
+                    "f:rollingUpdate": {
+                      ".": {},
+                      "f:maxSurge": {},
+                      "f:maxUnavailable": {}
+                    },
+                    "f:type": {}
+                  },
+                  "f:template": {
+                    "f:metadata": {
+                      "f:annotations": {
+                        ".": {},
+                        "f:prometheus.io/path": {},
+                        "f:prometheus.io/port": {},
+                        "f:prometheus.io/scrape": {}
+                      },
+                      "f:labels": {
+                        ".": {},
+                        "f:app.kubernetes.io/instance": {},
+                        "f:app.kubernetes.io/managed-by": {},
+                        "f:app.kubernetes.io/name": {},
+                        "f:helm.sh/chart": {}
+                      }
+                    },
+                    "f:spec": {
+                      "f:automountServiceAccountToken": {},
+                      "f:containers": {
+                        "k:{\"name\":\"resource-014\"}": {
+                          ".": {},
+                          "f:args": {},
+                          "f:env": {
+                            ".": {},
+                            "k:{\"name\":\"POD_NAME\"}": {
+                              ".": {},
+                              "f:name": {},
+                              "f:valueFrom": {
+                                ".": {},
+                                "f:fieldRef": {}
+                              }
+                            },
+                            "k:{\"name\":\"POD_NAMESPACE\"}": {
+                              ".": {},
+                              "f:name": {},
+                              "f:valueFrom": {
+                                ".": {},
+                                "f:fieldRef": {}
+                              }
+                            }
+                          },
+                          "f:image": {},
+                          "f:imagePullPolicy": {},
+                          "f:livenessProbe": {
+                            ".": {},
+                            "f:failureThreshold": {},
+                            "f:httpGet": {
+                              ".": {},
+                              "f:path": {},
+                              "f:port": {},
+                              "f:scheme": {}
+                            },
+                            "f:initialDelaySeconds": {},
+                            "f:periodSeconds": {},
+                            "f:successThreshold": {},
+                            "f:timeoutSeconds": {}
+                          },
+                          "f:name": {},
+                          "f:ports": {
+                            ".": {},
+                            "k:{\"containerPort\":8000,\"protocol\":\"TCP\"}": {
+                              ".": {},
+                              "f:containerPort": {},
+                              "f:name": {},
+                              "f:protocol": {}
+                            },
+                            "k:{\"containerPort\":8080,\"protocol\":\"TCP\"}": {
+                              ".": {},
+                              "f:containerPort": {},
+                              "f:name": {},
+                              "f:protocol": {}
+                            },
+                            "k:{\"containerPort\":8443,\"protocol\":\"TCP\"}": {
+                              ".": {},
+                              "f:containerPort": {},
+                              "f:name": {},
+                              "f:protocol": {}
+                            },
+                            "k:{\"containerPort\":9100,\"protocol\":\"TCP\"}": {
+                              ".": {},
+                              "f:containerPort": {},
+                              "f:name": {},
+                              "f:protocol": {}
+                            }
+                          },
+                          "f:readinessProbe": {
+                            ".": {},
+                            "f:failureThreshold": {},
+                            "f:httpGet": {
+                              ".": {},
+                              "f:path": {},
+                              "f:port": {},
+                              "f:scheme": {}
+                            },
+                            "f:initialDelaySeconds": {},
+                            "f:periodSeconds": {},
+                            "f:successThreshold": {},
+                            "f:timeoutSeconds": {}
+                          },
+                          "f:resources": {},
+                          "f:securityContext": {
+                            ".": {},
+                            "f:allowPrivilegeEscalation": {},
+                            "f:capabilities": {
+                              ".": {},
+                              "f:drop": {}
+                            },
+                            "f:readOnlyRootFilesystem": {}
+                          },
+                          "f:terminationMessagePath": {},
+                          "f:terminationMessagePolicy": {},
+                          "f:volumeMounts": {
+                            ".": {},
+                            "k:{\"mountPath\":\"/data\"}": {
+                              ".": {},
+                              "f:mountPath": {},
+                              "f:name": {}
+                            },
+                            "k:{\"mountPath\":\"/tmp\"}": {
+                              ".": {},
+                              "f:mountPath": {},
+                              "f:name": {}
+                            }
+                          }
+                        }
+                      },
+                      "f:dnsPolicy": {},
+                      "f:restartPolicy": {},
+                      "f:schedulerName": {},
+                      "f:securityContext": {
+                        ".": {},
+                        "f:runAsGroup": {},
+                        "f:runAsNonRoot": {},
+                        "f:runAsUser": {}
+                      },
+                      "f:serviceAccount": {},
+                      "f:serviceAccountName": {},
+                      "f:terminationGracePeriodSeconds": {},
+                      "f:volumes": {
+                        ".": {},
+                        "k:{\"name\":\"data\"}": {
+                          ".": {},
+                          "f:emptyDir": {},
+                          "f:name": {}
+                        },
+                        "k:{\"name\":\"tmp\"}": {
+                          ".": {},
+                          "f:emptyDir": {},
+                          "f:name": {}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "manager": "kube-controller-manager",
+              "operation": "Update",
+              "apiVersion": "apps/v1",
+              "time": "2026-10-30T09:22:57Z",
+              "fieldsType": "FieldsV1",
+              "fieldsV1": {
+                "f:metadata": {
+                  "f:annotations": {
+                    "f:deployment.kubernetes.io/revision": {}
+                  }
+                },
+                "f:status": {
+                  "f:availableReplicas": {},
+                  "f:conditions": {
+                    ".": {},
+                    "k:{\"type\":\"Available\"}": {
+                      ".": {},
+                      "f:lastTransitionTime": {},
+                      "f:lastUpdateTime": {},
+                      "f:message": {},
+                      "f:reason": {},
+                      "f:status": {},
+                      "f:type": {}
+                    },
+                    "k:{\"type\":\"Progressing\"}": {
+                      ".": {},
+                      "f:lastTransitionTime": {},
+                      "f:lastUpdateTime": {},
+                      "f:message": {},
+                      "f:reason": {},
+                      "f:status": {},
+                      "f:type": {}
+                    }
+                  },
+                  "f:observedGeneration": {},
+                  "f:readyReplicas": {},
+                  "f:replicas": {},
+                  "f:updatedReplicas": {}
+                }
+              },
+              "subresource": "status"
+            }
+          ]
+        },
+        "spec": {
+          "replicas": 2,
+          "selector": {
+            "matchLabels": {
+              "app.kubernetes.io/instance": "resource-014-default",
+              "app.kubernetes.io/name": "resource-014"
+            }
+          },
+          "template": {
+            "metadata": {
+              "creationTimestamp": null,
+              "labels": {
+                "app.kubernetes.io/instance": "resource-014-default",
+                "app.kubernetes.io/managed-by": "Helm",
+                "app.kubernetes.io/name": "resource-014",
+                "helm.sh/chart": "resource-014-34.4.1"
+              },
+              "annotations": {
+                "prometheus.io/path": "[sanitized annotation value]",
+                "prometheus.io/port": "[sanitized annotation value]",
+                "prometheus.io/scrape": "[sanitized annotation value]"
+              }
+            },
+            "spec": {
+              "volumes": [
+                {
+                  "name": "data",
+                  "emptyDir": {}
+                },
+                {
+                  "name": "tmp",
+                  "emptyDir": {}
+                }
+              ],
+              "containers": [
+                {
+                  "name": "resource-014",
+                  "image": "docker.io/resource-014:v3.3.4",
+                  "args": [
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]",
+                    "[sanitized command argument]"
+                  ],
+                  "ports": [
+                    {
+                      "name": "metrics",
+                      "containerPort": 9100,
+                      "protocol": "TCP"
+                    },
+                    {
+                      "name": "resource-014",
+                      "containerPort": 8080,
+                      "protocol": "TCP"
+                    },
+                    {
+                      "name": "web",
+                      "containerPort": 8000,
+                      "protocol": "TCP"
+                    },
+                    {
+                      "name": "websecure",
+                      "containerPort": 8443,
+                      "protocol": "TCP"
+                    }
+                  ],
+                  "env": [
+                    {
+                      "name": "POD_NAME",
+                      "valueFrom": {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.name"
+                        }
+                      }
+                    },
+                    {
+                      "name": "POD_NAMESPACE",
+                      "valueFrom": {
+                        "fieldRef": {
+                          "apiVersion": "v1",
+                          "fieldPath": "metadata.namespace"
+                        }
+                      }
+                    }
+                  ],
+                  "resources": {},
+                  "volumeMounts": [
+                    {
+                      "name": "data",
+                      "mountPath": "/data"
+                    },
+                    {
+                      "name": "tmp",
+                      "mountPath": "/tmp"
+                    }
+                  ],
+                  "livenessProbe": {
+                    "httpGet": {
+                      "path": "/ping",
+                      "port": 8080,
+                      "scheme": "HTTP"
+                    },
+                    "initialDelaySeconds": 2,
+                    "timeoutSeconds": 2,
+                    "periodSeconds": 10,
+                    "successThreshold": 1,
+                    "failureThreshold": 3
+                  },
+                  "readinessProbe": {
+                    "httpGet": {
+                      "path": "/ping",
+                      "port": 8080,
+                      "scheme": "HTTP"
+                    },
+                    "initialDelaySeconds": 2,
+                    "timeoutSeconds": 2,
+                    "periodSeconds": 10,
+                    "successThreshold": 1,
+                    "failureThreshold": 1
+                  },
+                  "terminationMessagePath": "/dev/termination-log",
+                  "terminationMessagePolicy": "File",
+                  "imagePullPolicy": "IfNotPresent",
+                  "securityContext": {
+                    "capabilities": {
+                      "drop": [
+                        "ALL"
+                      ]
+                    },
+                    "readOnlyRootFilesystem": true,
+                    "allowPrivilegeEscalation": false
+                  }
+                }
+              ],
+              "restartPolicy": "Always",
+              "terminationGracePeriodSeconds": 60,
+              "dnsPolicy": "ClusterFirst",
+              "serviceAccountName": "resource-014",
+              "serviceAccount": "resource-014",
+              "automountServiceAccountToken": true,
+              "securityContext": {
+                "runAsUser": 65532,
+                "runAsGroup": 65532,
+                "runAsNonRoot": true
+              },
+              "schedulerName": "default-scheduler"
+            }
+          },
+          "strategy": {
+            "type": "RollingUpdate",
+            "rollingUpdate": {
+              "maxUnavailable": 0,
+              "maxSurge": 1
+            }
+          },
+          "revisionHistoryLimit": 10,
+          "progressDeadlineSeconds": 600
+        },
+        "status": {
+          "observedGeneration": 2,
+          "replicas": 2,
+          "updatedReplicas": 2,
+          "readyReplicas": 2,
+          "availableReplicas": 2,
+          "conditions": [
+            {
+              "type": "Progressing",
+              "status": "True",
+              "lastUpdateTime": "2025-03-30T19:32:22Z",
+              "lastTransitionTime": "2025-03-30T19:32:16Z",
+              "reason": "NewReplicaSetAvailable",
+              "message": "ReplicaSet \"resource-014-559b68df8\" has successfully progressed."
+            },
+            {
+              "type": "Available",
+              "status": "True",
+              "lastUpdateTime": "2026-10-30T09:22:57Z",
+              "lastTransitionTime": "2026-10-30T09:22:57Z",
+              "reason": "MinimumReplicasAvailable",
+              "message": "Deployment has minimum availability."
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sanitization": "Resource identities, IP addresses, UUIDs and continuation values replaced consistently. Annotation values, command arguments and literal environment values removed. JSON keys and scalar types retained."
+}

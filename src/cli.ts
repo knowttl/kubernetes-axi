@@ -2,16 +2,21 @@ import { encode } from '@toon-format/toon';
 import { identity } from './credentials.js';
 import { Failure } from './errors.js';
 import { readCluster } from './runner.js';
+import type { NativeOutput } from './runner.js';
+import { parse, commandHelp } from './grammar.js';
+import { guidance } from './metadata-pin.js';
 
 const help = {
-  description: 'Read Kubernetes server version or compact pods with isolated credentials and pinned kubectl.',
-  commands: ['kubernetes-axi version', 'kubernetes-axi get pods'],
-  flags: ['--config <absolute-path>', '--profile <name>', '--namespace <name> (get pods)', '--help'],
+  description: guidance,
+  commands: ['version', 'get <resource> [name]', 'api-versions', 'api-resources', 'logs <pod>', 'top node', 'top pod', 'describe <resource> <name>', 'explain <resource>', 'native -- <arguments>'],
+  flags: ['--config <absolute-path>', '--profile <name>', '--namespace <name>', '--help'],
   examples: ['kubernetes-axi version --profile <name>', 'kubernetes-axi get pods --profile <name> --namespace <namespace>'],
 };
 
 export async function main(args: string[]): Promise<void> {
   let secret = '';
+  let native = false;
+  let json = false;
   const output = (value: object): void => {
     const redact = (data: unknown): unknown => {
       if (typeof data === 'string') {
@@ -30,46 +35,28 @@ export async function main(args: string[]): Promise<void> {
       }
       return data;
     };
-    process.stdout.write(`${encode(redact(value))}\n`);
+    if ('native' in value && value.native === true) {
+      const result = value as NativeOutput;
+      process.stdout.write(redact(result.stdout) as string);
+      process.stderr.write(redact(result.stderr) as string);
+      process.exitCode = result.exitCode;
+    } else process.stdout.write(`${json ? JSON.stringify(redact(value)) : encode(redact(value))}\n`);
   };
   try {
-    if (args.length === 0 || (args.length === 1 && args[0] === '--help')) {
+    if (args.length === 1 && args[0] === '--help') {
       output(help);
       return;
     }
-    const flags = new Map<string, string>();
-    const valid = ['--config', '--profile', '--namespace'];
-    const positionals: string[] = [];
-    let wantsHelp = false;
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!;
-      if (arg === '--help') { wantsHelp = true; continue; }
-      if (!arg.startsWith('-')) { positionals.push(arg); continue; }
-      const [flag, ...parts] = arg.split('=');
-      if (!valid.includes(flag!)) {
-        const label = /^--[a-zA-Z][a-zA-Z-]*$/.test(flag!) ? ` ${flag}` : '';
-        throw new Failure('USAGE', `Unknown argument${label}. Valid flags: ${valid.join(', ')}, --help. Secret argv is prohibited.`, 2);
-      }
-      if (flags.has(flag!)) throw new Failure('USAGE', 'Supply each flag once.', 2);
-      const value = parts.length ? parts.join('=') : args[++index];
-      if (!value || value.startsWith('--')) throw new Failure('USAGE', 'Each selection flag requires a value; run kubernetes-axi --help.', 2);
-      flags.set(flag!, value);
-    }
-    const command = positionals.join(' ');
-    const operation = command === 'version' ? 'version' : command === 'get pods' ? 'pods' : undefined;
-    if (!operation) throw new Failure('USAGE', 'Use kubernetes-axi version or kubernetes-axi get pods; --help lists the supported B1.1 surface.', 2);
-    if (operation === 'version' && flags.has('--namespace')) throw new Failure('USAGE', 'Valid flags for version: --config, --profile, --help.', 2);
-    if (wantsHelp) { output(help); return; }
-    const namespace = flags.get('--namespace');
-    if (namespace && (namespace.length > 63 || !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(namespace))) {
-      throw new Failure('USAGE', 'Use a valid Kubernetes namespace.', 2);
-    }
-    const selected = await identity(flags.get('--config'), flags.get('--profile'));
+    const invocation = parse(args);
+    native = invocation.native;
+    json = invocation.flags.get('output') === 'json';
+    if (invocation.help) { output(commandHelp(invocation.command)); return; }
+    const selected = await identity(invocation.config, invocation.profile);
     secret = selected.secret;
-    output(await readCluster(selected, operation, namespace));
+    output(await readCluster(selected, invocation));
   } catch (error) {
     const failure = error instanceof Failure ? error : new Failure('CONFIG_INVALID', 'Check the selected profile, protected files and installed package.');
-    output({ error: { code: failure.code, message: failure.message } });
+    output({ error: { code: failure.code, message: failure.message, ...failure.details }, ...(native ? { native: false } : {}) });
     process.exitCode = failure.exitCode;
   }
 }

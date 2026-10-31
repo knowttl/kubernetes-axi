@@ -1,0 +1,56 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "kind": "NamespaceList",
+    "apiVersion": "v1",
+    "metadata": {
+      "resourceVersion": "145743580",
+      "continue": "opaque-page-021",
+      "remainingItemCount": 9
+    },
+    "items": [
+      {
+        "metadata": {
+          "name": "resource-016",
+          "uid": "resource-017",
+          "resourceVersion": "138519592",
+          "creationTimestamp": "2026-10-13T19:08:29Z",
+          "labels": {
+            "kubernetes.io/metadata.name": "resource-016",
+            "name": "resource-016"
+          },
+          "managedFields": [
+            {
+              "manager": "helm",
+              "operation": "Update",
+              "apiVersion": "v1",
+              "time": "2026-10-13T19:08:29Z",
+              "fieldsType": "FieldsV1",
+              "fieldsV1": {
+                "f:metadata": {
+                  "f:labels": {
+                    ".": {},
+                    "f:kubernetes.io/metadata.name": {},
+                    "f:name": {}
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "spec": {
+          "finalizers": [
+            "kubernetes"
+          ]
+        },
+        "status": {
+          "phase": "Active"
+        }
+      }
+    ]
+  },
+  "sanitization": "Resource identities, IP addresses, UUIDs and continuation values replaced consistently. Annotation values, command arguments and literal environment values removed. JSON keys and scalar types retained."
+}
