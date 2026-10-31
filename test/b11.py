@@ -67,21 +67,28 @@ class PackagedRead(unittest.TestCase):
         return result
 
     def read_pods(self, *flags):
-        result = self.run_cli("get", "pods", "--output", "json", *flags)
+        result = self.run_cli("get", "pods", *flags)
         self.assertEqual(result.returncode, 0, result.stdout)
+        return self.decode_output(result.stdout)
+
+    def decode_output(self, text):
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", "import { decode } from '@toon-format/toon'; import { readFileSync } from 'node:fs'; console.log(JSON.stringify(decode(readFileSync(0, 'utf8'))));"],
+            cwd=PACKAGE, input=text, check=True, capture_output=True, text=True, timeout=10,
+        )
         return json.loads(result.stdout)
 
     def expect_error(self, code, *args, package=None):
-        result = self.run_cli(*args, "--output", "json", package=package)
+        result = self.run_cli(*args, package=package)
         self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(json.loads(result.stdout)["error"]["code"], code)
+        self.assertEqual(self.decode_output(result.stdout)["error"]["code"], code)
         self.assertNotIn("synthetic-selected-token", result.stdout)
         self.assertEqual(self.api.requests, [], "rejected input must not reach Kubernetes")
 
     def test_AC_001_server_version(self):
-        result = self.run_cli("version", "--output", "json")
+        result = self.run_cli("version")
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(json.loads(result.stdout)["gitVersion"], self.api.version["gitVersion"])
+        self.assertEqual(self.decode_output(result.stdout)["gitVersion"], self.api.version["gitVersion"])
 
     def test_installed_version_fast_path(self):
         shim = PACKAGE.parent.parent / ".bin" / ("kubernetes-axi.cmd" if os.name == "nt" else "kubernetes-axi")
@@ -116,9 +123,9 @@ class PackagedRead(unittest.TestCase):
             "KUBERNETES_AXI_CERTIFICATE_AUTHORITY": self.api.ca,
             "KUBERNETES_AXI_TOKEN": "synthetic-competing-token+/=",
         })
-        result = self.run_cli("--profile", "selected", "get", "pods", "--output", "json")
+        result = self.run_cli("--profile", "selected", "get", "pods")
         self.assertEqual(result.returncode, 0, result.stdout)
-        output = json.loads(result.stdout)
+        output = self.decode_output(result.stdout)
         self.assertEqual(output["source"], "file:selected")
         self.assertEqual({identity for _, identity in self.api.requests}, {"synthetic-selected-token+/="})
 
@@ -198,8 +205,8 @@ class PackagedRead(unittest.TestCase):
 
     def test_AC_BIN_001_incompatible_server_is_rejected(self):
         self.api.server_minor = "34"
-        result = self.run_cli("get", "pods", "--output", "json")
-        self.assertEqual(json.loads(result.stdout)["error"]["code"], "BINARY_INCOMPATIBLE")
+        result = self.run_cli("get", "pods")
+        self.assertEqual(self.decode_output(result.stdout)["error"]["code"], "BINARY_INCOMPATIBLE")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual({path.split("?")[0] for path, _ in self.api.requests}, {"/version"})
 
@@ -213,9 +220,9 @@ class PackagedRead(unittest.TestCase):
 
     def test_upstream_denial_is_not_empty_success(self):
         self.api.status = 403
-        result = self.run_cli("get", "pods", "--output", "json")
+        result = self.run_cli("get", "pods")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(json.loads(result.stdout)["error"]["code"], "ACCESS_DENIED")
+        self.assertEqual(self.decode_output(result.stdout)["error"]["code"], "ACCESS_DENIED")
 
     def test_default_output_is_compact_toon(self):
         result = self.run_cli("get", "pods")

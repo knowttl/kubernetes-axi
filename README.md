@@ -9,8 +9,8 @@ kubernetes-axi version --profile <name>
 kubernetes-axi get pods --profile <name> --namespace <namespace>
 ```
 
-Output is TOON by default.
-Use `--output json` for JSON, `--help` for the current command surface, or `--version` for the package version without loading the command graph.
+Output is TOON.
+Use `--help` for the current command surface, or `--version` for the package version without loading the command graph.
 Pod output retains name, namespace, phase, continuation token, resource version and remaining item count.
 This milestone performs one bounded list and does not follow the continuation token automatically.
 It uses kubectl discovery followed by kubectl's raw GET transport for a page limited to 100 pods.
@@ -45,6 +45,7 @@ The verification report records individual cases, native OS, package digest, fix
 `--artium <checkout>` optionally records that checkout's revision; it does not claim Artium verification.
 The `gate 1` and `release` entry points report the remaining prerequisites as pending and exit 2, even after B1.1 passes.
 Pending never counts as pass.
+Missing npm, OpenSSL or offline dependency cache entries also report pending and exit 2; integrity mismatches remain failures and exit 1.
 
 ```text
 python3 scripts/verify.py task B1.1 --mode offline --pack evidence --negative-control

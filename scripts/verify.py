@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,25 @@ HASHES = {
     "fixtures/P-006.json": "22ab7c898cedb6ae531887333fd28d56718d12ccb8f782bdd01573f0750ccf94",
     "docs/credential-standard-v2.txt": "f72fe2f0c6e39ec2cbdd143bd2eb5b432d58e134214059883ad61579d13690df",
 }
+
+
+class PendingPrerequisite(Exception):
+    pass
+
+
+def run_npm(npm, *args, **kwargs):
+    try:
+        return subprocess.run([npm, *args], check=True, capture_output=True, text=True, timeout=120, **kwargs)
+    except FileNotFoundError as error:
+        raise PendingPrerequisite("npm is required for offline package verification.") from error
+    except subprocess.CalledProcessError as error:
+        try:
+            code = json.loads(error.stdout).get("error", {}).get("code")
+        except (ValueError, AttributeError):
+            code = None
+        if code == "ENOTCACHED":
+            raise PendingPrerequisite("Populate the offline npm dependency cache before verification.") from error
+        raise
 
 
 class Results(unittest.TextTestResult):
@@ -73,18 +93,20 @@ def run(args):
         print(json.dumps(report, indent=2))
         return 2
     npm = "npm.cmd" if os.name == "nt" else "npm"
+    for executable in [npm, "openssl"]:
+        if shutil.which(executable) is None:
+            raise PendingPrerequisite(f"{executable} is required for offline package verification.")
     with tempfile.TemporaryDirectory(prefix="kubernetes-axi-verify-") as temporary:
         directory = Path(temporary)
-        packed = subprocess.run(
-            [npm, "pack", "--offline", "--json", "--pack-destination", str(directory)],
-            cwd=ROOT, check=True, capture_output=True, text=True, timeout=120,
+        packed = run_npm(
+            npm, "pack", "--offline", "--json", "--pack-destination", str(directory),
+            cwd=ROOT,
         )
         package = directory / json.loads(packed.stdout)[0]["filename"]
         report["packageSha256"] = hashlib.sha256(package.read_bytes()).hexdigest()
         prefix = directory / "installed"
-        subprocess.run(
-            [npm, "install", "--prefix", str(prefix), "--offline", "--ignore-scripts", "--no-audit", "--no-fund", str(package)],
-            check=True, capture_output=True, text=True, timeout=120,
+        run_npm(
+            npm, "install", "--prefix", str(prefix), "--offline", "--json", "--ignore-scripts", "--no-audit", "--no-fund", str(package),
         )
         b11.PACKAGE = prefix / "node_modules/@knowttl/kubernetes-axi"
         b11.PACK = pack
@@ -113,6 +135,9 @@ def main():
     args = parser.parse_args()
     try:
         return run(args)
+    except PendingPrerequisite as error:
+        print(json.dumps({"outcome": "pending", "mode": "offline", "prerequisite": str(error)}))
+        return 2
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         # Dependency output can include local paths; retain only the failure class.
         print(json.dumps({"outcome": "failure", "mode": "offline", "error": type(error).__name__, "message": "Check fixture hashes, cached package dependencies, pinned binaries and local test prerequisites."}))

@@ -6,16 +6,14 @@ import { readCluster } from './runner.js';
 const help = {
   description: 'Read Kubernetes server version or compact pods with isolated credentials and pinned kubectl.',
   commands: ['kubernetes-axi version', 'kubernetes-axi get pods'],
-  flags: ['--config <absolute-path>', '--profile <name>', '--namespace <name> (get pods)', '--output toon|json (default toon)', '--help'],
+  flags: ['--config <absolute-path>', '--profile <name>', '--namespace <name> (get pods)', '--help'],
   examples: ['kubernetes-axi version --profile <name>', 'kubernetes-axi get pods --profile <name> --namespace <namespace>'],
 };
 
 export async function main(args: string[]): Promise<void> {
-  // Error formatting must also honor a selector placed after an invalid argument.
-  let format = args.some((arg, index) => arg === '--output=json' || (arg === '--output' && args[index + 1] === 'json')) ? 'json' : 'toon';
   let secret = '';
   const output = (value: object): void => {
-    let text = format === 'json' ? JSON.stringify(value) : encode(value);
+    let text = encode(value);
     if (secret) {
       for (const form of new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret), Buffer.from(secret).toString('base64')])) {
         text = text.split(form).join('[REDACTED]');
@@ -31,7 +29,7 @@ export async function main(args: string[]): Promise<void> {
       return;
     }
     const flags = new Map<string, string>();
-    const valid = ['--config', '--profile', '--output', '--namespace'];
+    const valid = ['--config', '--profile', '--namespace'];
     const positionals: string[] = [];
     let wantsHelp = false;
     for (let index = 0; index < args.length; index++) {
@@ -51,9 +49,7 @@ export async function main(args: string[]): Promise<void> {
     const command = positionals.join(' ');
     const operation = command === 'version' ? 'version' : command === 'get pods' ? 'pods' : undefined;
     if (!operation) throw new Failure('USAGE', 'Use kubernetes-axi version or kubernetes-axi get pods; --help lists the supported B1.1 surface.', 2);
-    if (operation === 'version' && flags.has('--namespace')) throw new Failure('USAGE', 'Valid flags for version: --config, --profile, --output, --help.', 2);
-    format = flags.get('--output') ?? 'toon';
-    if (!['toon', 'json'].includes(format)) throw new Failure('USAGE', '--output must be toon or json.', 2);
+    if (operation === 'version' && flags.has('--namespace')) throw new Failure('USAGE', 'Valid flags for version: --config, --profile, --help.', 2);
     if (wantsHelp) { output(help); return; }
     const namespace = flags.get('--namespace');
     if (namespace && (namespace.length > 63 || !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(namespace))) {
