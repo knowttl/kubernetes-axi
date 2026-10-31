@@ -220,11 +220,13 @@ Native selection is refused when a standard profile is selected or injected.
 The adapter resolves the selected context in memory and executes with an isolated temporary kubeconfig.
 Ordinary reads leave the original native files unchanged, and cancellation removes temporary credentials.
 Native context selection is available after `native --`; other identity, impersonation, raw-output and TLS-bypass flags remain refused.
-Token and client-certificate identities require explicit CA trust.
+Selected native kubeconfig users containing `as`, `as-uid`, `as-groups` or `as-user-extra` are also refused before cluster requests.
+All native identities, including helpers, require explicit CA trust.
 
 Helpers require explicit `--trust-exec` after reviewing the selected configuration.
 A tool-owned shim brokers each ExecCredential acquisition or renewal over a private local socket.
 The parent registers acquired credentials and encoded forms before returning them to kubectl.
+Redaction covers literal, JavaScript and Go JSON-escaped, URI-encoded and base64 forms, including nested JSON escaping.
 Raw helper output and failures never reach public streams.
 The helper receives its native API version, cluster information and noninteractive execution information.
 Its existing environment and cache remain helper-owned under the local ambient exception; credentials are never imported into AXI storage.
