@@ -112,7 +112,7 @@ export async function readCluster(identity: Identity, invocation: Invocation): P
       if (format === 'native' && typeof failed.code === 'number') return { native: true, stdout: failed.stdout ?? '', stderr: failed.stderr ?? '', exitCode: failed.code };
       const stderr = failed.stderr ?? '';
       const reason = /^Error from server \(([^)]+)\):/m.exec(stderr)?.[1]
-        ?? (/^error: You must be logged in to the server \(Unauthorized\)/m.test(stderr) ? 'Unauthorized' : undefined);
+        ?? (/^error: You must be logged in to the server \(/m.test(stderr) ? 'Unauthorized' : undefined);
       const errors: [string[], string, number, string][] = [
         [['Unauthorized'], 'AUTH_REQUIRED', 401, 'The selected identity was rejected.'],
         [['Forbidden'], 'ACCESS_DENIED', 403, 'The selected identity cannot perform this read.'],
@@ -123,7 +123,17 @@ export async function readCluster(identity: Identity, invocation: Invocation): P
       for (const [reasons, code, upstreamStatus, message] of errors) if (reason && reasons.includes(reason)) throw new Failure(code, message, 1, { upstreamStatus, cause: code });
       if (!reason) {
         if (/^(?:error: )?(?:Unable to connect to the server: |net\/http: |context )[^\n]*(?:deadline exceeded|timed out|Timeout)/m.test(stderr)) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded request timed out.', 1, { cause: 'timeout' });
-        if (args.includes('explain') && /^error: (?:failed to (?:download|fetch) openapi|error loading schema)/mi.test(stderr)) throw new Failure('SCHEMA_UNAVAILABLE', 'The selected resource schema is unavailable or invalid.', 1, { cause: 'schema' });
+        if (args.includes('explain') && /^error: (?:failed to (?:download|fetch) openapi|error loading schema)/mi.test(stderr)) {
+          // Explain loses HTTP failure reasons; a raw read retains the server's status.
+          const schema = /^error: failed to fetch openapi schema for ((?:api|apis\/[a-z0-9][a-z0-9.-]*)\/v[0-9]+(?:(?:alpha|beta)[0-9]+)?):/m.exec(stderr)?.[1];
+          if (schema) {
+            try { await invoke(['get', `--raw=/openapi/v3/${schema}`]); }
+            catch (error) {
+              if (!(error instanceof Failure) || !['RESOURCE_NOT_FOUND', 'UPSTREAM_INVALID'].includes(error.code)) throw error;
+            }
+          }
+          throw new Failure('SCHEMA_UNAVAILABLE', 'The selected resource schema is unavailable or invalid.', 1, { cause: 'schema' });
+        }
         if (/^error: (?:invalid character|unexpected end|[^\n]*cannot unmarshal|invalid JSON)/mi.test(stderr)) throw new Failure('UPSTREAM_INVALID', 'The API returned a malformed response.', 1, { cause: 'malformed' });
       }
       throw new Failure('UPSTREAM_FAILED', 'The bounded Kubernetes read failed; check endpoint, TLS trust and identity.', 1, { cause: 'transport' });

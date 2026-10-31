@@ -67,6 +67,7 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
   if (path === '/apis/synthetic.example/v1beta1') return json(discovery('synthetic.example/v1beta1', [resource('widgets', 'Widget', true, ['wd'])]));
   if (path.split('/').length === 4 && path.startsWith('/apis/')) return json(discovery(path.slice(6), []));
   if (path === '/api/v1/namespaces') return page(variant === 'namespace-filter' ? 'P-011' : 'P-004');
+  if (path === '/api/v1/namespaces/kube-system') return json({ apiVersion: 'v1', kind: 'Namespace', metadata: { name: 'kube-system' }, status: { phase: 'Active' } });
   if (path === '/api/v1/nodes') {
     if (variant === 'metrics') return json({ kind: 'NodeList', apiVersion: 'v1', metadata: {}, items: [{ metadata: { name: 'synthetic-node' }, status: { allocatable: { cpu: '1', memory: '1Gi' }, capacity: { cpu: '1', memory: '1Gi' } } }] });
     return page('P-005');
@@ -170,7 +171,7 @@ try {
   });
   for (const name of ['forbidden', 'gone', 'timeout', 'unauthorized', 'expired', 'invalid-json']) await check(`failure-reason:${name}`, async () => {
     override = { path: `/api/v1/namespaces/kube-system/pods/${name}`, envelope: { status: 404, headers: {}, body: {
-      kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', message: `pods "${name}" not found`, code: 404,
+      kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', message: `pods "${name}" not found`, details: { name, kind: 'pods' }, code: 404,
     } } };
     const result = await run(['get', 'pods', name]);
     const failure = (decode(result.stdout) as any).error;
