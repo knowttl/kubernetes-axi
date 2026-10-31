@@ -13,7 +13,7 @@
     "prepare": "npm run build",
     "build": "node scripts/check-binaries.mjs && tsc",
     "lint": "tsc --noEmit && tsc -p tsconfig.tools.json && tsc -p tsconfig.verify.json",
-    "test": "unshare --user --map-root-user --net -- sh -c 'ip link set lo up && GOPROXY=off node scripts/generate-metadata.ts --check && python3 scripts/verify.py task B1.1 --mode offline --pack evidence && node test/b2.ts'",
+    "test": "unshare --user --map-root-user --net -- sh -c 'ip link set lo up && GOPROXY=off node scripts/generate-metadata.ts --check && python3 scripts/verify.py task B1.1 --mode offline --pack evidence && node test/private-files.ts && node test/b2.ts'",
     "generate:metadata": "node scripts/generate-metadata.ts",
     "check:metadata": "GOPROXY=off node scripts/generate-metadata.ts --check",
     "check": "npm run lint && npm test"

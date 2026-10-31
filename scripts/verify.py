@@ -93,19 +93,21 @@ def run(args):
             raise ValueError("offline verification requires a loopback-only network namespace")
         subprocess.run(["ip", "link", "set", "lo", "up"], check=True, capture_output=True, timeout=10)
     pack = args.pack.resolve()
-    if args.command == "task" and args.target in ("B2.1", "B2.2"):
-        if args.artium is not None:
-            revision = subprocess.run(
-                ["git", "-C", str(args.artium.resolve()), "rev-parse", "HEAD"],
-                check=True, capture_output=True, text=True, timeout=10,
-            ).stdout.strip()
-            print(json.dumps({"artiumRevision": revision, "outcome": "pending", "prerequisite": "Artium B2 reads require the separate stage-1 gate; this run verifies only the standalone package."}), flush=True)
+    if args.command == "task" and args.target in ("B2.1", "B2.2", "B2.3", "B2.4"):
+        private = subprocess.run(["node", str(ROOT / "test/private-files.ts")], cwd=ROOT, timeout=30)
+        if private.returncode:
+            return private.returncode
         result = subprocess.run(
             ["unshare", "--user", "--map-root-user", "--net", "--", "sh", "-c",
              'ip link set lo up && exec node "$1" --pack "$2"', "verify-b2", str(ROOT / "test/b2.ts"), str(pack)],
             cwd=ROOT, timeout=180,
         )
-        return result.returncode
+        if result.returncode or args.artium is None:
+            return result.returncode
+        return subprocess.run([
+            sys.executable, str(Path(__file__).resolve()), "task", "B1.2", "--mode", "offline",
+            "--pack", str(pack), "--artium", str(args.artium.resolve()), "--network-isolated",
+        ], cwd=ROOT, timeout=180).returncode
     for relative, expected in HASHES.items():
         actual = hashlib.sha256((pack / relative).read_bytes()).hexdigest()
         if actual != expected:

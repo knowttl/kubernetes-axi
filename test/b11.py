@@ -173,7 +173,10 @@ class PackagedRead(unittest.TestCase):
         self.assertEqual({identity for _, identity in self.api.requests}, {"certificate"})
 
     def test_CC_003_secret_forms_redacted(self):
-        secret = self.env["SELECTED_TOKEN"]
+        secret = 'synthetic-"quoted\\token+/='
+        self.env["SELECTED_TOKEN"] = secret
+        self.api.tokens.add(secret)
+        self.addCleanup(self.api.tokens.discard, secret)
         forms = [secret, json.dumps(secret)[1:-1], quote(secret, safe="~()*!.'-"), base64.b64encode(secret.encode()).decode()]
         self.api.echo = "|".join(forms)
         output = self.read_pods()

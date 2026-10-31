@@ -10,6 +10,9 @@ import type { Identity } from './credentials.js';
 import type { Invocation } from './grammar.js';
 import { Failure } from './errors.js';
 import { privateDirectory, writePrivate } from './private-files.js';
+import { readPrivate } from './private-files.js';
+import { nativeConfig, inspectNative } from './native.js';
+import type { Redactor } from './redaction.js';
 
 const execute = promisify(execFile);
 const pins = JSON.parse(await readFile(new URL('../kubectl-pins.json', import.meta.url), 'utf8')) as {
@@ -75,23 +78,28 @@ const validGroups = ajv.compile<{ groups: { name: string; versions: { groupVersi
 });
 export interface NativeOutput { native: true; stdout: string; stderr: string; exitCode: number }
 
-export async function readCluster(identity: Identity, invocation: Invocation): Promise<object | NativeOutput> {
+export async function readCluster(identity: Identity | undefined, invocation: Invocation, redactor: Redactor): Promise<object | NativeOutput> {
   const pin = pins.binaries[`${process.platform}-${process.arch}`];
   if (!pin) throw new Failure('BINARY_UNSUPPORTED', 'Use a recorded Linux or Windows amd64 runtime.');
   const binary = await realpath(fileURLToPath(new URL(`../vendor/${pin.file}`, import.meta.url)));
   const digest = createHash('sha256').update(await readFile(binary)).digest('hex');
   if (digest !== pin.sha256) throw new Failure('BINARY_INTEGRITY', 'Restore the recorded managed kubectl binary; PATH fallback is disabled.');
   const flags = invocation.flags;
-  const namespace = flags.get('namespace') ?? identity.profile.namespace ?? 'default';
+  let namespace = flags.get('namespace') ?? identity?.profile.namespace ?? 'default';
   const all = flags.get('all-namespaces') === 'true';
   if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(namespace) || namespace.length > 63) throw new Failure('USAGE', 'Use a valid Kubernetes namespace.', 2);
   const directory = join(tmpdir(), `kubernetes-axi-${randomUUID()}`);
   await privateDirectory(directory);
-  const { profile, secret } = identity;
-  const user = profile.auth === 'token' ? { token: secret } : {
-    'client-certificate-data': Buffer.from(profile.clientCertificate!).toString('base64'), 'client-key-data': Buffer.from(secret).toString('base64'),
+  const profile = identity?.profile;
+  const secret = identity?.secret;
+  const user = profile?.auth === 'token' ? { token: secret } : {
+    'client-certificate-data': Buffer.from(profile?.clientCertificate ?? '').toString('base64'), 'client-key-data': Buffer.from(secret ?? '').toString('base64'),
   };
   const config = join(directory, 'config.json');
+  const cancellation = new AbortController();
+  const cancel = (): void => cancellation.abort();
+  process.once('SIGTERM', cancel);
+  process.once('SIGINT', cancel);
   const deadline = Date.now() + 15_000;
   let requests = 0;
   let retainedBytes = 0;
@@ -104,7 +112,7 @@ export async function readCluster(identity: Identity, invocation: Invocation): P
     if (++requests > 64 || Date.now() >= deadline) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded operation exhausted its request or time budget.');
     let result;
     try {
-      result = await execute(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=5s', ...args], { env, timeout: Math.min(10_000, deadline - Date.now()), maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+      result = await execute(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=5s', ...args], { env, signal: cancellation.signal, timeout: Math.min(10_000, deadline - Date.now()), maxBuffer: 4 * 1024 * 1024, windowsHide: true });
     } catch (error) {
       const failed = error as { stderr?: string; stdout?: string; code?: string | number; killed?: boolean };
       if (failed.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw new Failure('OUTPUT_LIMIT', 'Output exceeded 4 MiB; narrow the selection.', 1, { cause: 'byte_limit' });
@@ -146,10 +154,27 @@ export async function readCluster(identity: Identity, invocation: Invocation): P
     catch { throw new Failure('UPSTREAM_INVALID', 'The API returned malformed JSON.', 1, { cause: 'malformed' }); }
   };
   const raw = (path: string): Promise<unknown> => invoke(['get', `--raw=${path}`]);
+  let close = async (): Promise<void> => {};
+  let source = identity?.source ?? '';
   try {
-    await writePrivate(config, JSON.stringify({
+    if (invocation.nativeConfig && invocation.native && invocation.command.path.startsWith('config ')) {
+      if (invocation.nativeConfig === 'ambient') throw new Failure('CONFIG_INVALID', 'Native config operations require one explicitly selected source file.');
+      if (invocation.command.effect === 'localWrite' && /^(true|1)$/i.test(process.env.KUBERNETES_AXI_READ_ONLY ?? '')) throw new Failure('READ_ONLY', 'Native config writes are disabled by read-only policy.');
+      await writePrivate(config, await readPrivate(invocation.nativeConfig, false));
+      await inspectNative(binary, config, redactor, cancellation.signal);
+      const result = await invoke(invocation.argv, 'native') as NativeOutput;
+      if (result.exitCode === 0 && invocation.command.effect === 'localWrite') await writePrivate(invocation.nativeConfig, await readPrivate(config, true));
+      return result;
+    }
+    if (invocation.nativeConfig) {
+      const loaded = await nativeConfig(binary, invocation.nativeConfig, flags.get('context'), directory, invocation.trustExec, redactor, cancellation.signal);
+      close = loaded.close;
+      namespace = flags.get('namespace') ?? loaded.namespace;
+      source = loaded.source;
+      await writePrivate(config, JSON.stringify(loaded.config));
+    } else await writePrivate(config, JSON.stringify({
       apiVersion: 'v1', kind: 'Config',
-      clusters: [{ name: 'selected', cluster: { server: profile.origin, 'certificate-authority-data': Buffer.from(profile.certificateAuthority).toString('base64') } }],
+      clusters: [{ name: 'selected', cluster: { server: profile!.origin, 'certificate-authority-data': Buffer.from(profile!.certificateAuthority).toString('base64') } }],
       users: [{ name: 'selected', user }], contexts: [{ name: 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': 'selected',
     }));
     const client = await invoke(['version', '--client=true', '-o', 'json']) as { clientVersion?: { gitVersion?: string } };
@@ -157,7 +182,7 @@ export async function readCluster(identity: Identity, invocation: Invocation): P
     const version = await raw('/version');
     if (!validVersion(version)) throw new Failure('UPSTREAM_INVALID', 'The server version response is invalid.');
     if (!pins.supportedServerMinors.includes(Number.parseInt(version.minor, 10))) throw new Failure('BINARY_INCOMPATIBLE', 'Server version is outside the recorded kubectl skew matrix.');
-    const provenance = { source: identity.source, kubectlVersion: pins.version, kubectlSha256: digest };
+    const provenance = { source, kubectlVersion: pins.version, kubectlSha256: digest };
     if (invocation.native) return await invoke(invocation.argv, 'native') as NativeOutput;
     const command = invocation.command.path;
     if (command === 'version') return { ...provenance, gitVersion: version.gitVersion };
@@ -205,7 +230,13 @@ export async function readCluster(identity: Identity, invocation: Invocation): P
     const state = { complete: !page.continue && !page.remainingItemCount && items.length <= 100, truncated: items.length > 100, continue: page.continue ?? '', resourceVersion: page.resourceVersion ?? '', ...(page.remainingItemCount === undefined ? {} : { remainingItemCount: page.remainingItemCount }) };
     if (invocation.home) return { ...provenance, bin: process.argv[1], description: 'Read Kubernetes with isolated credentials and pinned kubectl.', context: 'selected', namespace, pods: rows, ...state };
     return { ...provenance, [command.startsWith('top ') ? 'metrics' : resource.name]: rows, ...state };
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally {
+    cancellation.abort();
+    await close();
+    await rm(directory, { recursive: true, force: true });
+    process.removeListener('SIGTERM', cancel);
+    process.removeListener('SIGINT', cancel);
+  }
 }
 
 function matches(resource: Resource, requested?: string): boolean {
