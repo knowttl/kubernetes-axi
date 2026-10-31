@@ -72,6 +72,26 @@ class Results(unittest.TextTestResult):
 
 
 def run(args):
+    if platform.system() == "Linux" and not args.network_isolated:
+        # The namespace has no uplink. Every descendant, including native kubectl,
+        # inherits this boundary; a JavaScript transport mock cannot provide it.
+        for executable in ["unshare", "ip"]:
+            if shutil.which(executable) is None:
+                raise PendingPrerequisite(f"{executable} is required for isolated offline Linux verification.")
+        isolated = subprocess.run([
+            "unshare", "--user", "--map-root-user", "--net", "--",
+            sys.executable, str(Path(__file__).resolve()), *sys.argv[1:], "--network-isolated",
+        ], check=False, capture_output=True, text=True)
+        if isolated.stderr.startswith("unshare:"):
+            raise PendingPrerequisite("Permission to create an isolated user and network namespace is required.")
+        sys.stdout.write(isolated.stdout)
+        sys.stderr.write(isolated.stderr)
+        return isolated.returncode
+    if args.network_isolated:
+        links = subprocess.run(["ip", "-json", "link", "show"], check=True, capture_output=True, text=True, timeout=10)
+        if [link["ifname"] for link in json.loads(links.stdout)] != ["lo"]:
+            raise ValueError("offline verification requires a loopback-only network namespace")
+        subprocess.run(["ip", "link", "set", "lo", "up"], check=True, capture_output=True, timeout=10)
     pack = args.pack.resolve()
     if args.command == "task" and args.target in ("B2.1", "B2.2"):
         if args.artium is not None:
@@ -92,17 +112,26 @@ def run(args):
             raise ValueError(f"fixture digest mismatch: {relative}")
     report = {
         "task": args.target if args.command == "task" else None,
-        "mode": "offline", "nativeOS": platform.system(), "fixtureHashes": HASHES,
+        "mode": "offline", "nativeOS": platform.system(), "nativePlatform": platform.platform(), "fixtureHashes": HASHES,
         "artiumRevision": None,
-        "pending": ["B1.2 real local Artium public path", "B1.3 native platform stage gate"],
+        "pending": ["B1.3 native Windows execution and ACL conformance"],
+        "networkIsolation": "Linux network namespace, loopback only" if args.network_isolated else "native platform",
+        "artium": {"outcome": "skipped", "reason": "Real Artium journeys are opt-in; supply --artium <frozen-checkout>."},
     }
     if args.artium is not None:
         report["artiumRevision"] = subprocess.run(
             ["git", "-C", str(args.artium.resolve()), "rev-parse", "HEAD"],
             check=True, capture_output=True, text=True, timeout=10,
         ).stdout.strip()
-    if args.command == "task" and args.target != "B1.1":
-        report.update(outcome="pending", prerequisite="Only B1.1 is implemented.")
+        archive = subprocess.run(["git", "-C", str(args.artium.resolve()), "archive", report["artiumRevision"]],
+                                 check=True, capture_output=True, timeout=30).stdout
+        report["artiumSourceArchiveSha256"] = hashlib.sha256(archive).hexdigest()
+        report["artiumWorkingTreeDirty"] = bool(subprocess.run(
+            ["git", "-C", str(args.artium.resolve()), "status", "--porcelain", "--untracked-files=no"],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout)
+    if args.command == "task" and args.target not in ["B1.1", "B1.2", "B1.3"]:
+        report.update(outcome="pending", prerequisite="Only B1.1, B1.2 and the Linux portion of B1.3 are implemented.")
         print(json.dumps(report, indent=2))
         return 2
     npm = "npm.cmd" if os.name == "nt" else "npm"
@@ -129,10 +158,27 @@ def run(args):
         report["cases"] = result.cases
         report["kubectlPins"] = json.loads((b11.PACKAGE / "kubectl-pins.json").read_text())
         passed = result.wasSuccessful() and result.testsRun > 0
+        report["nativeStandalone"] = {"os": platform.system(), "outcome": "pass" if passed else "failure"}
+        if passed and args.artium is not None:
+            hosted = subprocess.run([
+                "node", str(ROOT / "test/b12.ts"), str(args.artium.resolve()), str(pack), report["packageSha256"], str(b11.PACKAGE),
+            ], cwd=args.artium.resolve(), capture_output=True, text=True, timeout=120)
+            if hosted.returncode:
+                sys.stderr.write(hosted.stderr)
+                report["artium"] = {"outcome": "failure"}
+                passed = False
+            else:
+                report["artium"] = json.loads(hosted.stdout)
+        elif args.artium is None:
+            sys.stderr.write("Artium journeys skipped: supply --artium <frozen-checkout> to opt in.\n")
         report["outcome"] = "pass" if passed else "failure"
-        if args.command != "task" and passed:
+        if passed and args.artium is None and (args.command != "task" or args.target != "B1.1"):
+            report.update(outcome="pending", prerequisite="A frozen Artium checkout is required for B1.2 and the hosted Linux gate.")
+        elif passed and (args.command != "task" or args.target == "B1.3"):
             report["outcome"] = "pending"
-            report["prerequisite"] = "Stage and release gates require tasks beyond B1.1; pending is not pass."
+            report["prerequisite"] = "Native Windows is pending; Linux and WSL evidence cannot complete B1.3."
+            if args.command == "release" or (args.command == "gate" and args.target != "1"):
+                report["pending"].append("Stages beyond B1 are unimplemented")
         print(json.dumps(report, indent=2))
         return 0 if report["outcome"] == "pass" else 2 if report["outcome"] == "pending" else 1
 
@@ -143,7 +189,8 @@ def main():
     parser.add_argument("target", nargs="?", help="B1.1, stage number, or release identifier")
     parser.add_argument("--mode", choices=["offline"], required=True)
     parser.add_argument("--pack", type=Path, required=True)
-    parser.add_argument("--artium", type=Path, help="Optional checkout revision to record; Artium is a B1.2 prerequisite")
+    parser.add_argument("--artium", type=Path, help="Opt in to real local Artium journeys using a frozen checkout with built dependencies")
+    parser.add_argument("--network-isolated", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--negative-control", action="store_true", help="Corrupt the fake pod name; verification must fail")
     args = parser.parse_args()
     try:
