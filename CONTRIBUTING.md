@@ -17,4 +17,4 @@ Tests are never required first; a change is verified end to end against the beha
 Exempt: validation-boundary tests, contract tests against an agreed schema or recording, and regression tests that cite the bug they reproduce.
 <!-- END canonical test-quality rules -->
 
-See [Build and verification](README.md#build-and-verification) for build prerequisites and offline verification requirements.
+See [README.md](README.md#build-and-verification) for build prerequisites and the offline verification contract.
