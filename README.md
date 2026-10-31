@@ -18,8 +18,8 @@ Native `kubectl get pods` consumes continuation tokens even when chunking is dis
 
 ## Offline build and verification
 
-The recorded toolchain is Node **24.14.0**, npm **11.9.0**, Python **3.12.3** and OpenSSL **3.0.13**, with exact dependencies in package-lock.json.
-Node and npm are pinned in package.json and .node-version.
+Node and npm requirements are pinned in [package.json](package.json), with exact dependencies in package-lock.json.
+The recorded verification toolchain uses Python **3.12.3** and OpenSSL **3.0.13**.
 Python and OpenSSL are verification prerequisites, not product runtime dependencies.
 No reference implementation code was copied.
 
@@ -37,7 +37,7 @@ python3 scripts/verify.py task B1.1 --mode offline --pack evidence
 Verification packs the product, installs that tarball into an isolated temporary prefix using the offline npm cache, and executes its public CLI.
 Only the external Kubernetes API is fake.
 It uses a verified TLS loopback server, two synthetic token identities and a synthetic client certificate.
-Discovery responses are synthetic; retained response envelopes and their hashes are documented in evidence/README.md.
+Discovery responses are synthetic; see [evidence/README.md](evidence/README.md) for retained response provenance and the fixture integrity source.
 The harness binds only 127.0.0.1, constructs all upstream URLs itself and accepts no external upstream endpoint.
 Live modes are rejected.
 
@@ -54,9 +54,7 @@ python3 scripts/verify.py task B1.1 --mode offline --pack evidence --negative-co
 The negative control deliberately returns a wrong pod name from the fake API.
 The same outcome assertions must report failure and exit 1 before the verifier is trusted.
 
-The binary matrix is kubectl **v1.32.2** with Kubernetes **v1.31-v1.33** under the one-minor skew policy.
-This matrix remains observational until live commissioning.
-The pin is captain-delegated (overnight), a plan-named selection, and must be revisited at commissioning.
+The managed kubectl version, supported server minors, binary digests and commissioning status are recorded in [kubectl-pins.json](kubectl-pins.json).
 The Windows binary and digest are recorded, but Linux verification does not establish native Windows or ACL conformance.
 
 ## Isolated credentials
@@ -94,7 +92,10 @@ Without that selection, KUBERNETES_AXI_ORIGIN, KUBERNETES_AXI_AUTH, KUBERNETES_A
 Certificate profiles use KUBERNETES_AXI_CLIENT_CERTIFICATE and KUBERNETES_AXI_PRIVATE_KEY instead of the token.
 KUBERNETES_AXI_NAMESPACE is optional.
 A partial environment profile fails rather than borrowing fields from the file.
+When no environment-profile fields or explicit profile selection are present, the file's defaultProfile is used, or its sole profile if no default is set.
+If the file has multiple profiles and no default, select one explicitly.
 File profiles may deliberately reference any valid named environment variable through a SecretRef.
+If a file profile omits its token or privateKey reference, the secret is read from KUBERNETES_AXI_TOKEN or KUBERNETES_AXI_PRIVATE_KEY respectively.
 Certificate authority and client certificate fields contain PEM text, and secret files use absolute local paths.
 
 All currently supported operations are reads.
