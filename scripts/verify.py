@@ -141,14 +141,14 @@ def run(args):
     with tempfile.TemporaryDirectory(prefix="kubernetes-axi-verify-") as temporary:
         directory = Path(temporary)
         packed = run_npm(
-            npm, "pack", "--json", "--pack-destination", str(directory),
+            npm, "pack", "--prefer-offline", "--json", "--pack-destination", str(directory),
             cwd=ROOT,
         )
         package = directory / json.loads(packed.stdout)[0]["filename"]
         report["packageSha256"] = hashlib.sha256(package.read_bytes()).hexdigest()
         prefix = directory / "installed"
         run_npm(
-            npm, "install", "--prefix", str(prefix), "--json", "--ignore-scripts", "--no-audit", "--no-fund", str(package),
+            npm, "install", "--prefer-offline", "--prefix", str(prefix), "--json", "--ignore-scripts", "--no-audit", "--no-fund", str(package),
         )
         b11.PACKAGE = prefix / "node_modules/@knowttl/kubernetes-axi"
         b11.PACK = pack
