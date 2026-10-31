@@ -2,7 +2,9 @@
 
 An agent-facing TypeScript CLI that runs pinned kubectl with an isolated identity.
 The standalone package implements B1.1 and the bounded reads and generated command policy in B2.1 and B2.2.
-Artium integration and native Windows commissioning remain pending their separate stage gates.
+The opt-in B1.2 verification journey exercises version and pod reads through a frozen local Artium fixture.
+The Linux portion of B1.3 is covered; native Windows execution and ACL conformance remain pending.
+Complete command coverage and live commissioning remain later tasks.
 
 ```text
 kubernetes-axi version --profile <name>
@@ -47,12 +49,13 @@ The npm package is `@knowttl/kubernetes-axi`; the executable is `kubernetes-axi`
 
 Node and npm requirements are pinned in [package.json](package.json), with exact dependencies in package-lock.json.
 The recorded verification toolchain uses Python **3.12.3** and OpenSSL **3.0.13**.
+Linux verification also requires `unshare` and `ip` with permission to create a user and network namespace.
 Python and OpenSSL are verification prerequisites, not product runtime dependencies.
 No reference implementation code was copied.
 
-Before installation, place the official binaries listed in kubectl-pins.json in `vendor/` using its recorded filenames.
+For offline source builds, place the official binaries listed in kubectl-pins.json in `vendor/` using its recorded filenames before dependency installation.
 Verify each against the official published URL plus `.sha256`.
-Build preparation may download absent binaries from their pinned public URLs with SHA256 checked before writing; present binaries are digest-checked, and tests remain offline under outbound deny with no PATH fallback.
+The build checks both digests and downloads a missing binary only from its pinned official URL, verifying SHA256 before writing; pre-provision both binaries for offline builds and tests, which remain under outbound deny with no PATH fallback.
 Dependency installation uses the npm registry; Kubernetes verification stays local.
 
 ```text
@@ -64,17 +67,32 @@ python3 scripts/verify.py task B2.2 --mode offline --pack evidence
 ```
 
 Verification packs the product, installs that tarball into an isolated temporary prefix, and executes its public CLI.
+The B1 verifier uses `--prefer-offline` for npm pack and install; populate the dependency cache before running inside the network namespace.
 Only the external Kubernetes API is fake.
 It uses a verified TLS loopback server, two synthetic token identities and a synthetic client certificate.
 Discovery responses are synthetic; see [evidence/README.md](evidence/README.md) for retained response provenance and the fixture integrity source.
 The harness binds only 127.0.0.1, constructs all upstream URLs itself and accepts no external upstream endpoint.
 `npm test` runs all children in a Linux user/network namespace with only loopback enabled, denying outbound network access at process level.
 It requires `unshare` and `ip`; other platform commissioning remains pending.
+On Linux the verifier also re-executes inside a network namespace with only loopback, inherited by the server, clients and native kubectl processes.
 Live modes are rejected.
 
 The verification report records individual cases, native OS, package digest, fixture hashes and kubectl pins.
-`--artium <checkout>` optionally records that checkout's revision; it does not claim Artium verification.
-The `gate 1` and `release` entry points report the remaining prerequisites as pending and exit 2, even after B1.1 passes.
+Without `--artium`, the configured test skips the hosted journeys with an explicit reason.
+Supply a built, frozen Artium checkout with its copied dependencies, staged package and fresh admission inventory to opt in.
+Its Kubernetes tarball must match the package being verified exactly.
+The hosted journey starts the real server and runner, logs in with the real CLI, and replays the retained version and pod responses through the installed package.
+It tests a poisoned developer kubeconfig, broader upstream access, host role denial, identity override refusals and cancellation cleanup.
+Artium's role grant covers the Kubernetes tool; this evidence does not claim operation-specific role grants.
+
+```text
+python3 scripts/verify.py task B1.2 --mode offline --pack evidence --artium <frozen-checkout>
+python3 scripts/verify.py task B1.3 --mode offline --pack evidence --artium <frozen-checkout>
+```
+
+B1.2 exits 0 only when both standalone and hosted journeys pass.
+B1.3 and `gate 1` report native Windows as pending and exit 2 after the Linux journeys pass.
+The `release` entry point also remains pending because later stages are unimplemented.
 Pending never counts as pass.
 The B1.1 verifier reports missing npm or OpenSSL as pending and exits 2; integrity mismatches remain failures and exit 1.
 Both B2 task commands run the combined B2.1/B2.2 harness, which requires Linux network namespaces, npm, OpenSSL and cached npm dependencies; missing prerequisites fail the run.
@@ -176,4 +194,5 @@ Certificate authority and client certificate fields contain PEM text, and secret
 
 All currently supported operations are reads.
 KUBERNETES_AXI_READ_ONLY accepts only true, false, 1 or 0; no write journal is produced.
-The broader native kubeconfig adapter, credential-management commands and hosted identity policy are later tasks.
+The broader native kubeconfig adapter and credential-management commands are later tasks.
+The frozen Artium fixture owns hosted profile injection and role policy; it is local integration evidence, not a claim of released Artium support.
