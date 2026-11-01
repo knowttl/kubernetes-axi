@@ -14,6 +14,7 @@ import { readPrivate } from './private-files.js';
 import { nativeConfig, inspectNative } from './native.js';
 import type { Redactor } from './redaction.js';
 import { mutationSession } from './mutations.js';
+import { byteProcess, type ByteExecution } from './byte-process.js';
 
 const execute = promisify(execFile);
 const pins = JSON.parse(await readFile(new URL('../kubectl-pins.json', import.meta.url), 'utf8')) as {
@@ -83,7 +84,7 @@ const validGroups = ajv.compile<{ groups: { name: string; versions: { groupVersi
 });
 export interface NativeOutput { native: true; stdout: string; stderr: string; exitCode: number }
 
-export async function readCluster(identity: Identity | undefined, invocation: Invocation, redactor: Redactor): Promise<object | NativeOutput> {
+export async function readCluster(identity: Identity | undefined, invocation: Invocation, redactor: Redactor, byteExecution?: ByteExecution): Promise<object | NativeOutput> {
   const pin = pins.binaries[`${process.platform}-${process.arch}`];
   if (!pin) throw new Failure('BINARY_UNSUPPORTED', 'Use a recorded Linux or Windows amd64 runtime.');
   const binary = await realpath(fileURLToPath(new URL(`../vendor/${pin.file}`, import.meta.url)));
@@ -103,6 +104,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
   const config = join(directory, 'config.json');
   const cancellation = new AbortController();
   const cancel = (): void => cancellation.abort();
+  byteExecution?.signal.addEventListener('abort', cancel, { once: true });
   process.once('SIGTERM', cancel);
   process.once('SIGINT', cancel);
   const deadline = Date.now() + 15_000;
@@ -114,6 +116,10 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR } : {}),
   };
   const invoke = async (args: string[], format: 'json' | 'text' | 'native' = 'json'): Promise<unknown> => {
+    if (format === 'native' && byteExecution) {
+      const exitCode = await byteProcess(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=0', ...args], env, byteExecution, redactor);
+      return { native: true, stdout: '', stderr: '', exitCode };
+    }
     if (++requests > 64 || Date.now() >= deadline) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded operation exhausted its request or time budget.');
     let result;
     try {
@@ -279,6 +285,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     await rm(directory, { recursive: true, force: true });
     process.removeListener('SIGTERM', cancel);
     process.removeListener('SIGINT', cancel);
+    byteExecution?.signal.removeEventListener('abort', cancel);
   }
 }
 

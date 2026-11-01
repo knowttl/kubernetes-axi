@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { Failure } from './errors.js';
 import { metadataSha256 } from './metadata-pin.js';
 import { routeEffect } from './route-policy.js';
@@ -11,6 +11,8 @@ const bytes = await readFile(new URL('../command-metadata.json', import.meta.url
 export const metadata = JSON.parse(bytes.toString()) as { version: string; commands: Command[] };
 
 export interface Invocation {
+  session?: boolean;
+  inputSha256?: string;
   workflow?: { kind: 'prepare' | 'server-dry-run' } | { kind: 'preview' | 'confirm'; key: string; digest: string };
   native: boolean;
   config?: string;
@@ -26,13 +28,13 @@ export interface Invocation {
   home: boolean;
 }
 
-export function parse(args: string[]): Invocation {
+export function parse(args: string[], session = false): Invocation {
   if (createHash('sha256').update(bytes).digest('hex') !== metadataSha256 || metadata.version !== 'v1.32.2') {
     throw new Failure('METADATA_STALE', 'Rebuild reviewed command metadata for the installed kubectl pin.');
   }
   const own: { config?: string; profile?: string; nativeConfig?: string; trustExec: boolean; credentialFd?: number } = { trustExec: false };
   const argv: string[] = [];
-  let native = false;
+  let native = session;
   let workflow: Invocation['workflow'];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
@@ -118,13 +120,20 @@ export function parse(args: string[]): Invocation {
     if (value === undefined || (!flag.noOpt && value.startsWith('--'))) throw new Failure('USAGE', `--${flag.name} requires a ${flag.type} value.`, 2);
     if (flag.type === 'bool' && !/^(true|false|1|0|t|f|TRUE|FALSE|True|False|T|F)$/.test(value)) throw new Failure('USAGE', `--${flag.name} requires a boolean.`, 2);
     if (/^u?int(32|64)?$/.test(flag.type) && !/^-?\d+$/.test(value)) throw new Failure('USAGE', `--${flag.name} requires an integer.`, 2);
+    if (session && (flag.effect === 'fileRead' || flag.name === 'kustomize')) {
+      const workspace = join(process.env.TMPDIR ?? '', 'workspace');
+      for (const path of value.split(',')) {
+        const selected = relative(workspace, resolve(path));
+        if (path !== '-' && (!process.env.TMPDIR || selected.startsWith('..') || isAbsolute(selected))) throw new Failure('WORKSPACE_REQUIRED', 'Session file inputs must come from the owned workspace.');
+      }
+    }
     flags.set(flag.name, flag.type === 'bool' ? (/^(true|1|t)$/i.test(value) ? 'true' : 'false') : value);
   }
   const help = flags.get('help') === 'true' || command.path === 'help';
   if (command.path === '' && positionals.length) throw new Failure('USAGE', 'Unknown command. Run kubernetes-axi --help.', 2);
   if (!command.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The command has no reviewed effect classification.');
   if (!help) {
-    const guarded = ['exec', 'attach', 'create token'].includes(command.path);
+    const guarded = ['exec', 'attach', 'create token', ...(session ? ['port-forward'] : [])].includes(command.path);
     if (flags.has('raw')) {
       const effect = routeEffect(command.path === 'get' ? 'GET' : command.path === 'delete' ? 'DELETE' : command.path === 'replace' ? 'PUT' : 'POST', flags.get('raw')!);
       if (effect !== 'read') requireWrites();
@@ -136,20 +145,20 @@ export function parse(args: string[]): Invocation {
       requireWrites();
       if (!workflow || workflow.kind !== 'prepare') throw new Failure('PREVIEW_REQUIRED', 'Use prepare -- <command>, preview <request-key>, then confirm <request-key> --digest <digest>.');
       if (command.path === 'create token' && !/^(true|1)$/i.test(process.env.KUBERNETES_AXI_ACQUIRE_CREDENTIAL ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Token issuance requires KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true and a private delivery pipe on confirmation.');
-      if (flags.get('tty') === 'true' || flags.get('stdin') === 'true') throw new Failure('LOCAL_TERMINAL_REQUIRED', 'Interactive execution requires a local terminal; this route supports bounded non-interactive execution only.');
+      if (flags.get('tty') === 'true' || !session && flags.get('stdin') === 'true') throw new Failure('LOCAL_TERMINAL_REQUIRED', 'Interactive execution requires a local terminal; this route supports bounded non-interactive execution only.');
     }
     if (native && ['get', 'describe'].includes(command.path) && positionals.some((value, index) => (index === 0 || value.includes('/')) && value.split(',').some(resource => /^secrets?(?:$|[/.])/i.test(resource)))) throw new Failure('CREDENTIAL_OUTPUT_REFUSED', 'Use compact get secrets for metadata; public native Secret output is unavailable.');
     if (own.nativeConfig && ['config set', 'config set-credentials', 'config view'].includes(command.path)) throw new Failure('USAGE', 'Raw native credential inspection and credential argv writes are unavailable.', 2);
     if (command.compatibilityLimit) throw new Failure('NOT_YET_SUPPORTED_STAGED', command.compatibilityLimit);
     for (const flag of command.flags) {
-      if (flag.effect === 'stream' && (flags.get(flag.name) ?? flag.default) !== 'false') throw new Failure('USAGE', `--${flag.name} must be false under the isolated bounded-read policy.`, 2);
+      if (!session && flag.effect === 'stream' && (flags.get(flag.name) ?? flag.default) !== 'false') throw new Failure('USAGE', `--${flag.name} must be false under the isolated bounded-read policy.`, 2);
     }
     for (const name of flags.keys()) {
       const flag = command.flags.find(flag => flag.name === name)!;
       if (!flag.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The flag has no reviewed effect classification.');
       if (flag.effect === 'stream') continue;
-      const writeInput = workflow && ['prepare', 'server-dry-run'].includes(workflow.kind) && (flag.effect === 'fileRead' && ['filename', 'patch-file'].includes(flag.name) || flag.effect === 'clusterWrite' && (['dry-run', 'server-side', 'force-conflicts', 'force', 'prune', 'prune-allowlist'].includes(flag.name) || command.path === 'debug' && flag.name === 'profile'));
-      const boundedExecution = (guarded || command.path === 'debug') && ['stdin', 'tty', 'attach'].includes(name) && flags.get(name) === 'false';
+      const writeInput = workflow && ['prepare', 'server-dry-run'].includes(workflow.kind) && (flag.effect === 'fileRead' && ['filename', 'patch-file'].includes(flag.name) || session && flag.name === 'kustomize' || flag.effect === 'clusterWrite' && (['dry-run', 'server-side', 'force-conflicts', 'force', 'prune', 'prune-allowlist'].includes(flag.name) || command.path === 'debug' && flag.name === 'profile'));
+      const boundedExecution = (guarded || command.path === 'debug') && ['stdin', 'tty', 'attach'].includes(name) && (flags.get(name) === 'false' || session && name === 'stdin');
       const raw = name === 'raw' && (command.path === 'get' || Boolean(workflow) && command.effect === 'clusterWrite');
       if (!(own.nativeConfig && flag.name === 'context') && !raw && !writeInput && !boundedExecution && !['argument', 'presentation'].includes(flag.effect)) throw new Failure('USAGE', `--${flag.name} is unavailable under the isolated bounded-read policy (${flag.effect}).`, 2);
       if (flag.name === 'output' && /file[=\s]|template-file/.test(flags.get(flag.name)!)) throw new Failure('USAGE', 'File templates require a later local-file capability.', 2);
@@ -176,7 +185,7 @@ export function parse(args: string[]): Invocation {
     }
   }
   validateSelection(own);
-  return { native, ...own, ...(workflow ? { workflow } : {}), command, argv, positionals, flags, help, home: command.path === '' && positionals.length === 0 };
+  return { native, ...own, ...(session ? { session } : {}), ...(workflow ? { workflow } : {}), command, argv, positionals, flags, help, home: command.path === '' && positionals.length === 0 };
 }
 
 function validateSelection(own: { config?: string; profile?: string; nativeConfig?: string; trustExec: boolean }): void {

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { decode } from '@toon-format/toon';
 
 // Synthetic Kubernetes boundary, shared with B2's real TLS server and installed package.
@@ -167,6 +169,7 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
 }
 
 interface Harness {
+  cli: string;
   run: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
   check: (id: string, test: () => Promise<void>) => Promise<void>;
   environment: NodeJS.ProcessEnv;
@@ -174,7 +177,7 @@ interface Harness {
   requests: string[];
 }
 
-export async function checkMutations({ run, check, environment, directory, requests }: Harness): Promise<void> {
+export async function checkMutations({ run, check, environment, directory, requests, cli }: Harness): Promise<void> {
   const output = async (args: string[]): Promise<any> => { const result = await run(args); assert.equal(result.code, 0, result.stdout + result.stderr); return decode(result.stdout); };
   const prepare = async (args: string[]): Promise<any> => output(['prepare', '--', ...args]);
   const approved = async (args: string[]): Promise<any> => { const saved = await prepare(args); const preview = await output(['preview', saved.request]); return { ...saved, digest: preview.digest }; };
@@ -182,6 +185,42 @@ export async function checkMutations({ run, check, environment, directory, reque
   const test = async (name: string, body: () => Promise<void>): Promise<void> => check(name, async () => {
     reset(); environment.KUBERNETES_AXI_READ_ONLY = 'false'; environment.KUBERNETES_AXI_COLLECTION_DELETE = 'true';
     try { await body(); } finally { environment.KUBERNETES_AXI_READ_ONLY = 'true'; delete environment.KUBERNETES_AXI_COLLECTION_DELETE; }
+  });
+  for (const [variant, expectedOutcome, exitCode] of [
+    ['', 'committed', 0], ['conflict', 'failed', 1], ['loss-after-commit', 'uncertain', 1], ['eviction-pending', 'accepted_pending', 1],
+  ] as const) await test(`AC-SESSION-003:worker mutation ${expectedOutcome} preserves exit status`, async () => {
+    const workspace = join(environment.TMPDIR!, 'workspace');
+    mkdirSync(workspace, { mode: 0o700 });
+    const file = join(workspace, 'session-manifest.json');
+    writeFileSync(file, JSON.stringify({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'selected', namespace: ns }, data: { value: 'after' } }));
+    const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const events = new EventEmitter();
+    child.on('message', (raw: unknown) => {
+      const event = raw as { event: string };
+      events.emit(event.event, raw);
+    });
+    const closed = once(child, 'close', { signal: AbortSignal.timeout(20000) });
+    try {
+      const prepared = once(events, 'prepared', { signal: AbortSignal.timeout(15000) });
+      child.send({ action: 'start', args: ['prepare', '--', ...(variant === 'eviction-pending'
+        ? ['drain', 'b3-node', '--force', '--ignore-daemonsets'] : ['apply', '-f', file, '-n', ns, '--validate=false'])] });
+      const [{ preview }] = await prepared as [{ preview: { digest: string } }];
+      mode = variant;
+      const result = once(events, 'result', { signal: AbortSignal.timeout(15000) });
+      const exited = once(events, 'exit', { signal: AbortSignal.timeout(15000) });
+      child.send({ action: 'confirm', digest: preview.digest });
+      const [{ value }] = await result as [{ value: { complete: boolean; results: { outcome: string }[] } }];
+      const [status] = await exited as [{ exitCode: number; stdoutEOF: boolean; stderrEOF: boolean }];
+      const [code] = await closed;
+      assert.equal(value.complete, exitCode === 0);
+      assert(value.results.some(result => result.outcome === expectedOutcome), JSON.stringify(value));
+      assert.equal(status.exitCode, exitCode);
+      assert.equal(status.stdoutEOF, true); assert.equal(status.stderrEOF, true);
+      assert.equal(code, exitCode);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; }
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
   await test('B3-disabled-writes', async () => {
     environment.KUBERNETES_AXI_READ_ONLY = 'true';

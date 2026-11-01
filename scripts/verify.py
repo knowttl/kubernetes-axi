@@ -93,6 +93,19 @@ def run(args):
             raise ValueError("offline verification requires a loopback-only network namespace")
         subprocess.run(["ip", "link", "set", "lo", "up"], check=True, capture_output=True, timeout=10)
     pack = args.pack.resolve()
+    if args.command == "task" and args.target in ("B4.1", "B4.2", "B4.3"):
+        if platform.system() != "Linux":
+            raise PendingPrerequisite("B4 hosted journeys require Linux; native Windows commissioning remains pending.")
+        if args.artium is None:
+            raise PendingPrerequisite("B4 hosted journeys require --artium with a frozen checkout; ordinary package tests skip those journeys explicitly.")
+        cases = "^" + args.target.replace(".", r"\.") + "-host:"
+        if args.target == "B4.3":
+            cases += "|^AC-029"
+        return subprocess.run([
+            "node", str(ROOT / "test/b2.ts"), "--pack", str(pack),
+            "--artium", str(args.artium.resolve()), "--case", cases,
+            "--task", args.target,
+        ], cwd=args.artium.resolve(), timeout=300).returncode
     if args.command == "task" and args.target in ("B2.1", "B2.2", "B2.3", "B2.4", "B3.1", "B3.2", "B3.3", "B3.4"):
         if args.target == "B3.4" and (not os.environ.get("KUBERNETES_AXI_TEST_WRITE_OBSERVER") or args.artium is None):
             raise PendingPrerequisite("B3.4 requires a pinned native write observer and a frozen Artium checkout for real credential-store observation.")

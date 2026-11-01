@@ -28,4 +28,21 @@ export class Redactor {
     if (data !== null && typeof data === 'object') return Object.fromEntries(Object.entries(data).map(([key, value]) => [this.text(key), /^(token|password|clientSecret|privateKey|client-key-data|authorization)$/i.test(key) ? '[REDACTED]' : this.value(value)]));
     return data;
   }
+
+  byteStream(): { push: (bytes: Buffer) => Buffer; end: () => Buffer } {
+    const patterns = [...this.forms].map(form => Buffer.from(form));
+    const hold = Math.max(0, ...patterns.map(pattern => pattern.length - 1));
+    let pending = Buffer.alloc(0);
+    return {
+      push: bytes => {
+        pending = Buffer.concat([pending, bytes]);
+        if (patterns.some(pattern => pending.includes(pattern))) throw new Error('protected binary output');
+        const count = Math.max(0, pending.length - hold);
+        const safe = Buffer.from(pending.subarray(0, count));
+        pending = Buffer.from(pending.subarray(count));
+        return safe;
+      },
+      end: () => { const safe = pending; pending = Buffer.alloc(0); return safe; },
+    };
+  }
 }

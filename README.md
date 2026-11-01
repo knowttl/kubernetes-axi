@@ -2,6 +2,7 @@
 
 An agent-facing TypeScript CLI that runs pinned kubectl with an isolated identity.
 The standalone package implements B1.1, B2.1 through B2.4, and B3.1 through B3.4: bounded reads, generated command policy, isolated identities, confirmed resource mutations, bounded execution and private token acquisition.
+Its private hosted worker also supports workspace copy, independent byte sessions and authenticated multi-port forwarding through Artium for B4.1 through B4.3.
 The opt-in B1.2 verification journey exercises version and pod reads through a frozen local Artium fixture.
 The Linux portion of B1.3 is covered; native Windows execution and ACL conformance remain pending.
 Complete command coverage and live commissioning remain later tasks.
@@ -28,12 +29,13 @@ Inspect `complete`, `truncated` and `continue` before treating a result as compl
 An oversized server page is truncated with `complete: false`.
 Named reads retain NotFound failures; denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits have distinct error codes.
 Errors retain the upstream status where available.
-Each operation has a 15-second budget, at most 64 child invocations, a 5-second default request timeout, a 10-second child limit and a 4 MiB retained-output limit.
-Logs preserve text and default to 100 trailing lines and 65,536 bytes; a bounded log snapshot never claims completeness.
+Each standalone read has a 15-second budget, at most 64 child invocations, a 5-second default request timeout, a 10-second child limit and a 4 MiB retained-output limit.
+Standalone logs preserve text and default to 100 trailing lines and 65,536 bytes; a bounded log snapshot never claims completeness.
 Use `get <resource> [name] -o json` for compact JSON, or the native route for upstream presentation and ordered arguments.
 Compact JSON serializes the same bounded summary and provenance as TOON; it does not return the upstream Kubernetes object.
 Compact `describe`, `explain`, `rollout history` and `rollout status` wrap upstream text with provenance and `complete: false`; use the native route for unwrapped text.
-Native stdout, stderr and exit status are preserved after redaction, with the same time and byte bounds.
+Standalone native stdout, stderr and exit status are preserved after redaction, with the same time and byte bounds.
+See [Hosted files and bounded sessions](#hosted-files-and-bounded-sessions) for the separate hosted contract.
 Native `kubectl get pods` consumes continuation tokens even when chunking is disabled, so the bounded read retains the original page state explicitly.
 
 ## Install
@@ -83,9 +85,9 @@ The verification report records individual cases, native OS, package digest, fix
 Without `--artium`, the configured test skips the hosted journeys with an explicit reason.
 Supply a built, frozen Artium checkout with its copied dependencies, staged package and fresh admission inventory to opt in.
 Its Kubernetes tarball must match the package being verified exactly.
-The hosted journey starts the real server and runner, logs in with the real CLI, and replays the retained version and pod responses through the installed package.
+The B1.2 hosted journey starts the real server and runner, logs in with the real CLI, and replays the retained version and pod responses through the installed package.
 It tests a poisoned developer kubeconfig, broader upstream access, host role denial, identity override refusals and cancellation cleanup.
-Artium's role grant covers the Kubernetes tool; this evidence does not claim operation-specific role grants.
+The B1.2 role-denial evidence covers the Kubernetes tool grant; see [Hosted files and bounded sessions](#hosted-files-and-bounded-sessions) for operation-specific session authorization.
 
 ```text
 python3 scripts/verify.py task B1.2 --mode offline --pack evidence --artium <frozen-checkout>
@@ -155,7 +157,8 @@ Credential overrides, server overrides, impersonation and TLS-bypass options are
 Filesystem options are refused except for mutation inputs described below and explicit native configuration operations.
 Cluster mutations use the protected prepare, preview and confirm workflow below.
 For supported raw routes, execution and token acquisition, see [Bounded execution and private token acquisition](#bounded-execution-and-private-token-acquisition).
-Transfers, proxy connections and interactive sessions remain unavailable.
+Direct standalone transfers, generic proxy listeners and interactive sessions remain unavailable.
+Hosted transfers and port forwarding use the bounded Artium integration described below.
 Explicit local native configuration edits are available through the native identity adapter described below.
 Diff has an approved staged compatibility limit: `NOT_YET_SUPPORTED_STAGED`, before reading a manifest or invoking a helper.
 When its later file/helper capability is implemented, native diff must retain exit 0 for no differences, 1 for differences and greater than 1 for failure.
@@ -287,7 +290,8 @@ Preparation freezes the named pod, container and exact command argument sequence
 Confirmation checks the selected identity, cluster and pod snapshot before invoking pinned kubectl.
 The private gateway supports WebSocket GET and kubectl's SPDY fallback, preserves separate stdout/stderr, and returns the remote exit code.
 Both operations require `KUBERNETES_AXI_READ_ONLY=false`.
-TTY and stdin requests return `LOCAL_TERMINAL_REQUIRED`; interactive workflows require trusted kubectl in a local terminal.
+Standalone TTY and stdin requests return `LOCAL_TERMINAL_REQUIRED`; interactive workflows require trusted kubectl in a local terminal.
+For hosted input, see [Hosted files and bounded sessions](#hosted-files-and-bounded-sessions).
 `debug --attach=false` prepares its named create or ephemeral-container patch through the mutation policy.
 Helper-backed mutations and execution remain refused.
 
@@ -300,7 +304,8 @@ kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>
 Raw reads are classified by their API route, including nested proxy routes and query-based watches.
 Raw execution, token issuance and proxy connections cannot bypass their explicit capability boundaries.
 Raw resource mutations still require preparation and confirmation.
-Local rendering and plugin execution are explicitly classified and refused, including during preparation.
+Standalone local rendering and plugin execution are explicitly classified and refused, including during preparation.
+For hosted builtin Kustomize inputs, see [Hosted files and bounded sessions](#hosted-files-and-bounded-sessions).
 
 Native `create token` is an explicit acquisition flow.
 Enable `KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true` in addition to writes and prepare `create token <service-account> --duration=10m -n <namespace>`.
@@ -313,6 +318,40 @@ The channel ends with the bounded invocation; cancellation, expiry and failed de
 The recipient owns subsequent use after explicit delivery.
 Request files contain the approved TokenRequest specification and outcome, never the issued token.
 Hosted admission still denies ungranted native scale, exec and token commands before forwarding.
+
+### Hosted files and bounded sessions
+
+An Artium host with the Kubernetes session integration can upload caller-owned file trees, use stdin manifests, recursive `-f` directories or builtin Kustomize inputs, and copy regular container files in either direction.
+File inputs must come from the session's owned workspace; host file arguments use `workspace:<relative-path>`, and copy downloads use `artifact:<relative-path>`.
+Copy requires the container's `tar` command.
+Binary input and artifacts preserve NUL and invalid UTF-8 bytes; configured credentials in public output are refused without changing the bytes.
+Traversal, links and oversized archives are rejected before artifact materialization.
+
+The authenticated session API provides start, status, output and cancellation operations under `/v1/tools/kubernetes-axi/sessions`.
+Hosted sessions support non-interactive exec/attach with bounded stdin bytes, followed logs and pod watches; TTY remains unavailable.
+Writes and arbitrary execution retain the existing frozen preview and exact-digest confirmation policy.
+Every operation checks the caller, login family, current operation grant and credential revision.
+Output records carry channel, sequence, byte offset and length, with separate stdout/stderr EOF, process exit and explicit gaps or truncation.
+Cancellation, expiry, revocation and shutdown terminate the process and remove temporary identities and workspaces.
+
+Port-forward sessions freeze a named pod and up to eight numeric remote ports.
+The Artium client binds loopback listeners and carries independent connections over the owning session's authenticated tunnel.
+Client-initiated EOF allows remote output to drain.
+The pinned kubectl port-forward transport (client-go v0.32.2) resets the stream after remote EOF, so continued client input after remote-initiated half-close is not supported in this slice.
+This accepted B4.3 scope amendment is tracked in [issue 26](https://github.com/knowttl/kubernetes-axi/issues/26).
+Unapproved ports and ungranted raw or nested proxy effects cannot bypass the shared policy.
+
+```text
+artium-axi kubernetes-axi tunnel <session-id> --port 8080 --port 9090
+python3 scripts/verify.py task B4.1 --mode offline --pack evidence --artium <frozen-checkout>
+python3 scripts/verify.py task B4.2 --mode offline --pack evidence --artium <frozen-checkout>
+python3 scripts/verify.py task B4.3 --mode offline --pack evidence --artium <frozen-checkout>
+```
+
+These task checks require a clean frozen Artium checkout whose Kubernetes tarball matches the package under test.
+An unsealed checkout or mismatched pin reports pending, even when individual development cases pass.
+Ordinary `npm test` skips Artium journeys with an explicit reason and needs no Artium fixture.
+Native Windows execution and live commissioning remain pending.
 
 See [Build and verification](#build-and-verification) for credential-custody observation requirements.
 
