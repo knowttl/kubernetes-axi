@@ -43,6 +43,7 @@ export class Redactor {
     const markers = ['-----BEGIN ', 'eyJ', 'AccountKey=', 'sig=', ...names.map(name => `"${name}"`)];
     let pending = '';
     let lineStart = true;
+    let shown = 0;
     const flush = (final: boolean): Buffer => {
       let count = pending.length;
       if (!final) {
@@ -59,13 +60,15 @@ export class Redactor {
           /eyJ[A-Za-z0-9_.-]*$/g,
           /(?:AccountKey=|sig=)[^&\s]*$/gi,
           new RegExp(`"(?:${fields})"\\s*(?::\\s*(?:"(?:\\\\.|[^"\\\\])*\\\\?)?)?$`, 'gi'),
+          new RegExp(`(?:^|\\n)\\s*(?:${fields})\\s*$`, 'gi'),
+          new RegExp(`(?:^|\\n)\\s*(?:${fields})\\s*:\\s*[^\\r\\n\\u2028\\u2029]*$`, 'gi'),
         ];
         for (const pattern of unfinished) for (const match of pending.matchAll(pattern)) count = Math.min(count, match.index);
         const start = pending.lastIndexOf('\n') + 1;
         if (start > 0 || lineStart) {
           const line = pending.slice(start);
           const trimmed = line.trimStart().toLowerCase();
-          if (names.some(name => name.toLowerCase().startsWith(trimmed)) || new RegExp(`^\\s*(?:${fields})\\s*(?::[^\\n]*)?$`, 'i').test(line)) count = Math.min(count, start);
+          if (names.some(name => name.toLowerCase().startsWith(trimmed))) count = Math.min(count, start);
         }
         const spans = [...textRules.flatMap(([pattern]) => [...pending.matchAll(pattern)]),
           ...[...this.forms].flatMap(form => [...pending.matchAll(new RegExp(form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))])];
@@ -75,8 +78,16 @@ export class Redactor {
       }
       const safe = pending.slice(0, count);
       pending = pending.slice(count);
+      const promptOnly = shown > 0 && new RegExp(`^\\s*(?:${fields})\\s*:\\s*$`, 'i').test(safe);
+      const output = count && !promptOnly ? this.text(safe).slice(shown) : '';
+      if (count) shown = 0;
       if (safe) lineStart = safe.endsWith('\n');
-      return Buffer.from(this.text(safe));
+      const prompt = !final && (lineStart || /^[^\S\n]*\n/.test(pending)) ? new RegExp(`^(\\s*(?:${fields})\\s*:)(\\s*)`, 'i').exec(pending) : null;
+      if (!prompt) return Buffer.from(output);
+      const prefix = this.text(prompt[1]!) + prompt[2]!;
+      const visible = prefix.slice(shown);
+      shown = prefix.length;
+      return Buffer.from(output + visible);
     };
     return { push: bytes => { pending += decoder.write(bytes); return flush(false); }, end: () => { pending += decoder.end(); return flush(true); } };
   }

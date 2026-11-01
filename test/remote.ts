@@ -263,6 +263,32 @@ export async function checkRemote(context: {
       const bytes = [...Buffer.from(credentialOutput)].map(byte => stream.push(Buffer.from([byte])));
       assert.equal(Buffer.concat([...bytes, stream.end()]).toString(), credentialSafe);
     });
+    for (const name of ['token', 'password', 'Password', 'clientSecret', 'privateKey', 'client-key-data', 'authorization']) {
+      await check(`B5.1-terminal:${name} credential state survives newlines`, async () => {
+        const { Redactor } = await import(join(dirname(cli), '../dist/redaction.js')) as typeof import('../src/redaction.js');
+        const stream = new Redactor().terminalStream();
+        assert.equal(stream.push(Buffer.from(`${name}:\n`)).toString(), `${name}:\n`);
+        assert.equal(stream.push(Buffer.from(' ')).toString(), ' ');
+        assert.equal(stream.push(Buffer.from('canary')).toString(), '');
+        assert.equal(stream.push(Buffer.from('-multiline\nready> ')).toString(), '[REDACTED]\nready> ');
+        assert.equal(stream.end().toString(), '');
+      });
+      await check(`B5.1-terminal:${name} prompt arrives before its protected value`, async () => {
+        const { Redactor } = await import(join(dirname(cli), '../dist/redaction.js')) as typeof import('../src/redaction.js');
+        const stream = new Redactor().terminalStream();
+        const prefix = [...Buffer.from(`${name}: `)].map(byte => stream.push(Buffer.from([byte])));
+        assert.equal(Buffer.concat(prefix).toString(), `${name}: `);
+        assert.equal(stream.push(Buffer.from('canary')).toString(), '');
+        assert.equal(stream.push(Buffer.from('-prompt')).toString(), '');
+        assert.equal(stream.end().toString(), '[REDACTED]');
+        const immediate = new Redactor().terminalStream();
+        assert.equal(immediate.push(Buffer.from(`${name}: `)).toString(), `${name}: `);
+        assert.equal(immediate.end().toString(), '');
+        const following = new Redactor().terminalStream();
+        assert.equal(following.push(Buffer.from(`ready\n${name}: `)).toString(), `ready\n${name}: `);
+        assert.equal(following.push(Buffer.from('canary\n')).toString(), '[REDACTED]\n');
+      });
+    }
     for (const [operation, container] of [['exec', 'selected-container'], ['attach', 'selected-container'], ['attach', 'terminal-container']] as const) await check(`AC-BYTES-001:session ${operation} ${container} stdin stdout stderr and EOF preserve arbitrary bytes`, async () => {
       const bytes = Buffer.from([0, 255, 254, 128, 10, 13, 0]);
       const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
