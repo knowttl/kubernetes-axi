@@ -30,7 +30,7 @@ An oversized server page is truncated with `complete: false`.
 Named reads retain NotFound failures; denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits have distinct error codes.
 Errors retain the upstream status where available.
 Each standalone read has a 15-second budget, at most 64 child invocations, a 5-second default request timeout, a 10-second child limit and a 4 MiB retained-output limit.
-Logs preserve text and default to 100 trailing lines and 65,536 bytes; a bounded log snapshot never claims completeness.
+Standalone logs preserve text and default to 100 trailing lines and 65,536 bytes; a bounded log snapshot never claims completeness.
 Use `get <resource> [name] -o json` for compact JSON, or the native route for upstream presentation and ordered arguments.
 Compact JSON serializes the same bounded summary and provenance as TOON; it does not return the upstream Kubernetes object.
 Compact `describe`, `explain`, `rollout history` and `rollout status` wrap upstream text with provenance and `complete: false`; use the native route for unwrapped text.
@@ -322,11 +322,13 @@ Hosted admission still denies ungranted native scale, exec and token commands be
 ### Hosted files and bounded sessions
 
 An Artium host with the Kubernetes session integration can upload caller-owned file trees, use stdin manifests, recursive `-f` directories or builtin Kustomize inputs, and copy regular container files in either direction.
+File inputs must come from the session's owned workspace; host file arguments use `workspace:<relative-path>`, and copy downloads use `artifact:<relative-path>`.
 Copy requires the container's `tar` command.
 Binary input and artifacts preserve NUL and invalid UTF-8 bytes; configured credentials in public output are refused without changing the bytes.
 Traversal, links and oversized archives are rejected before artifact materialization.
 
 The authenticated session API provides start, status, output and cancellation operations under `/v1/tools/kubernetes-axi/sessions`.
+Hosted sessions support non-interactive exec/attach with bounded stdin bytes, followed logs and pod watches; TTY remains unavailable.
 Writes and arbitrary execution retain the existing frozen preview and exact-digest confirmation policy.
 Every operation checks the caller, login family, current operation grant and credential revision.
 Output records carry channel, sequence, byte offset and length, with separate stdout/stderr EOF, process exit and explicit gaps or truncation.
