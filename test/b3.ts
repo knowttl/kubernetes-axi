@@ -29,6 +29,7 @@ function reset(): void {
   objects.clear(); effects.length = 0; mode = ''; revision = 1;
   objects.set(`${core}/configmaps/selected`, doc('v1', 'ConfigMap', 'selected', ns, { data: { value: 'before' } }));
   objects.set(`${core}/configmaps/decoy`, doc('v1', 'ConfigMap', 'decoy', ns, { data: { value: 'decoy' } }));
+  objects.set(`${core}/secrets/selected`, doc('v1', 'Secret', 'selected', ns, { data: { key: 'YmVmb3Jl' }, metadata: { ...doc('v1', 'Secret', 'selected', ns).metadata, annotations: {} } }));
   objects.set(`${apps}/deployments/selected`, deployment('selected'));
   objects.set(`${apps}/deployments/decoy`, deployment('decoy'));
   const rs = doc('apps/v1', 'ReplicaSet', 'b3-revision-one', ns, { spec: { replicas: 0, selector: { matchLabels: { app: 'selected' } }, template: structuredClone(objects.get(`${apps}/deployments/selected`)!.spec.template) } });
@@ -58,13 +59,14 @@ function merge(before: any, patch: any): any {
   return result;
 }
 
-export function mutationFixture(request: IncomingMessage, response: ServerResponse): boolean {
+export function mutationFixture(request: IncomingMessage, response: ServerResponse, loseReply = false): boolean {
   const url = new URL(request.url!, 'https://local');
   const path = url.pathname;
   const send = (body: object, status = 200): void => { response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body)); };
   const status = (reason: string, code: number): void => send({ kind: 'Status', apiVersion: 'v1', status: 'Failure', reason, message: reason, code }, code);
   const routes: Record<string, object> = {
-    '/api/v1': discovery('v1', [resource('pods', 'Pod', true, ['po']), { ...resource('pods/eviction', 'Eviction', true), group: 'policy', version: 'v1' }, resource('namespaces', 'Namespace', false, ['ns']), resource('nodes', 'Node', false, ['no']), resource('events', 'Event', true, ['ev']), resource('configmaps', 'ConfigMap', true, ['cm']), resource('services', 'Service', true, ['svc']), resource('serviceaccounts', 'ServiceAccount', true, ['sa'])]),
+    '/api/v1': discovery('v1', [resource('pods', 'Pod', true, ['po']), { ...resource('pods/eviction', 'Eviction', true), group: 'policy', version: 'v1' }, resource('namespaces', 'Namespace', false, ['ns']), resource('nodes', 'Node', false, ['no']), resource('events', 'Event', true, ['ev']), resource('configmaps', 'ConfigMap', true, ['cm']), resource('secrets', 'Secret', true), resource('services', 'Service', true, ['svc']), resource('serviceaccounts', 'ServiceAccount', true, ['sa'])]),
+    '/apis/networking.k8s.io/v1': discovery('networking.k8s.io/v1', [resource('ingresses', 'Ingress', true)]),
     '/apis/apps/v1': discovery('apps/v1', [resource('deployments', 'Deployment', true, ['deploy']), { ...resource('deployments/scale', 'Scale', true), group: 'autoscaling', version: 'v1' }, resource('replicasets', 'ReplicaSet', true, ['rs']), resource('daemonsets', 'DaemonSet', true, ['ds']), resource('statefulsets', 'StatefulSet', true, ['sts'])]),
     '/apis/policy/v1': discovery('policy/v1', [resource('poddisruptionbudgets', 'PodDisruptionBudget', true, ['pdb'])]),
     '/apis/autoscaling/v2': discovery('autoscaling/v2', [resource('horizontalpodautoscalers', 'HorizontalPodAutoscaler', true, ['hpa'])]),
@@ -93,6 +95,10 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
     const existing = objects.get(target);
     const scale = (object: ObjectBody): ObjectBody => ({ apiVersion: 'autoscaling/v1', kind: 'Scale', metadata: object.metadata, spec: { replicas: object.spec.replicas }, status: { replicas: object.spec.replicas, selector: 'app=selected' } });
     if (request.method === 'GET') {
+      if (mode === 'create-after-preflight' && target === `${core}/configmaps/absent` && !existing) {
+        objects.set(target, doc('v1', 'ConfigMap', 'absent', ns, { data: { value: 'other-actor' } }));
+        return status('NotFound', 404);
+      }
       if (existing) return send(path.endsWith('/scale') ? scale(existing) : existing);
       if (subresource || path.split('/').at(-1) === 'absent') return status('NotFound', 404);
       const listKinds: Record<string, [string, string]> = { pods: ['v1', 'Pod'], configmaps: ['v1', 'ConfigMap'], deployments: ['apps/v1', 'Deployment'], replicasets: ['apps/v1', 'ReplicaSet'], widgets: ['synthetic.example/v1beta1', 'Widget'], poddisruptionbudgets: ['policy/v1', 'PodDisruptionBudget'], horizontalpodautoscalers: ['autoscaling/v2', 'HorizontalPodAutoscaler'] };
@@ -150,7 +156,7 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
       changed.metadata = { ...existing.metadata, ...changed.metadata, resourceVersion: String(revision++) };
       if (!dryRun) objects.set(target, path.endsWith('/scale') ? { ...existing, metadata: changed.metadata, spec: { ...existing.spec, replicas: changed.spec.replicas } } : changed);
     }
-    if (mode === 'loss-after-commit' && !dryRun) { response.destroy(); return; }
+    if ((mode === 'loss-after-commit' || loseReply) && !dryRun) { response.destroy(); return; }
     send(changed, request.method === 'POST' ? 201 : 200);
   })().catch(error => { console.error(error); status('InternalError', 500); });
   return true;
@@ -244,6 +250,84 @@ export async function checkMutations({ run, check, environment, directory, reque
     const file = join(directory, 'manifest.json'); writeFileSync(file, JSON.stringify({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'selected', namespace: ns }, data: { value: 'applied' } }));
     await confirm(await approved(['apply', '-f', file, '-n', ns, '--server-side', '--validate=false']));
     assert.equal(objects.get(`${core}/configmaps/selected`)!.data.value, 'applied');
+  });
+  for (const race of [false, true]) await test(`R3-absent-apply-${race ? 'race' : 'create'}`, async () => {
+    const file = join(directory, 'manifest.json');
+    writeFileSync(file, JSON.stringify({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'absent', namespace: ns }, data: { value: 'approved' } }));
+    const saved = await approved(['apply', '-f', file, '-n', ns, '--server-side', '--validate=false']);
+    if (race) mode = 'create-after-preflight';
+    const result = await run(['confirm', saved.request, '--digest', saved.digest]);
+    assert.equal(result.code, race ? 1 : 0, result.stdout + result.stderr);
+    assert.equal(objects.get(`${core}/configmaps/absent`)!.data.value, race ? 'other-actor' : 'approved');
+    assert.equal(effects.length, 1);
+    assert.equal(effects[0]!.method, 'POST');
+    if (race) assert.equal((decode(result.stdout) as any).results[0].upstreamStatus, 409);
+  });
+  await test('R4-revoked-bulk-capability', async () => {
+    const before = structuredClone([...objects]);
+    const saved = await approved(['delete', 'configmaps', '-n', ns, '--all']);
+    delete environment.KUBERNETES_AXI_COLLECTION_DELETE;
+    requests.length = 0;
+    const result = await run(['confirm', saved.request, '--digest', saved.digest]);
+    assert.equal((decode(result.stdout) as any).error.code, 'CAPABILITY_UNAVAILABLE');
+    assert.equal(effects.length, 0); assert.equal(requests.length, 0);
+    assert.deepEqual([...objects], before);
+    environment.KUBERNETES_AXI_COLLECTION_DELETE = 'true';
+    assert.equal((await confirm(saved)).state, 'complete');
+  });
+  for (const [type, path, value] of [
+    ['secret', '/data/key', 'c2VjcmV0'],
+    ['secret', '/stringData/key', 'synthetic-string-secret'],
+    ['secret', '/binaryData/key', 'c3ludGhldGljLWJpbmFyeQ=='],
+    ['secret', '/metadata/annotations/private~1key', 'synthetic-annotation-secret'],
+    ['configmap', '/metadata/annotations/kubectl.kubernetes.io~1last-applied-configuration', 'synthetic-last-applied-secret'],
+  ]) await test(`R2-json-patch-redaction-${path}`, async () => {
+    const target = `${core}/${type === 'secret' ? 'secrets' : 'configmaps'}/selected`;
+    Object.assign(objects.get(target)!, { stringData: {}, binaryData: {} });
+    objects.get(target)!.metadata.annotations = {};
+    const patch = JSON.stringify([{ op: 'add', path, value }]);
+    const saved = await prepare(['patch', type!, 'selected', '-n', ns, '--type=json', '-p', patch]);
+    const result = await run(['preview', saved.request]);
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert(!result.stdout.includes(value!));
+    const preview = decode(result.stdout) as any;
+    assert.equal(preview.changes[0].change.at(-1).value, '[REDACTED]');
+    const frozen = JSON.parse(readFileSync(join(directory, 'requests', saved.request, 'request.json'), 'utf8'));
+    assert.equal(frozen.plan.changes[0].body.at(-1).value, value);
+    await confirm({ ...saved, digest: preview.digest });
+    assert.equal(effects[0]!.wire, frozen.plan.changes[0].wire);
+    const segments = path!.slice(1).split('/').map(part => part.replaceAll('~1', '/').replaceAll('~0', '~'));
+    assert.equal(segments.reduce((body: any, key) => body[key], objects.get(target)), value);
+  });
+  for (const dryRun of [false, true]) await test(`R1-ingress-${dryRun ? 'dry-run' : 'confirm'}`, async () => {
+    const args = ['create', 'ingress', 'demo', '-n', ns, '--rule=example.test/=svc:80', '--validate=false'];
+    if (dryRun) await output(['server-dry-run', '--', ...args]);
+    else await confirm(await approved(args));
+    const rule = effects[0]!.body.spec.rules[0];
+    assert.equal(rule.host, 'example.test');
+    assert.equal(rule.http.paths[0].path, '/');
+    assert.equal(rule.http.paths[0].pathType, 'Exact');
+    assert.equal(rule.http.paths[0].backend.service.name, 'svc');
+    assert.equal(rule.http.paths[0].backend.service.port.number, 80);
+    assert.equal(effects[0]!.dryRun, dryRun);
+    assert.equal(objects.has(`/apis/networking.k8s.io/v1/namespaces/${ns}/ingresses/demo`), !dryRun);
+  });
+  await test('R1-pod-inline-references-and-fields', async () => {
+    const fields = { 'f:metadata': { 'f:labels': { 'f:app': {} } } };
+    const manifest = { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'mapped', namespace: ns,
+      managedFields: [{ manager: 'synthetic', operation: 'Apply', apiVersion: 'v1', fieldsType: 'FieldsV1', fieldsV1: fields }] },
+    spec: { containers: [{ name: 'app', image: 'synthetic:v1',
+      livenessProbe: { httpGet: { path: '/health', port: 80 } },
+      env: [{ name: 'CONFIG', valueFrom: { configMapKeyRef: { name: 'settings', key: 'key' } } }, { name: 'SECRET', valueFrom: { secretKeyRef: { name: 'credentials', key: 'key' } } }],
+      envFrom: [{ configMapRef: { name: 'settings' } }, { secretRef: { name: 'credentials' } }],
+    }], volumes: [{ name: 'settings', configMap: { name: 'settings' } }, { name: 'credentials', secret: { secretName: 'credentials' } },
+      { name: 'projected', projected: { sources: [{ configMap: { name: 'settings' } }, { secret: { name: 'credentials' } }] } }],
+    } };
+    const file = join(directory, 'manifest.json'); writeFileSync(file, JSON.stringify(manifest));
+    await confirm(await approved(['create', '-f', file, '-n', ns, '--validate=false']));
+    const changed = objects.get(`${core}/pods/mapped`)!;
+    assert.deepEqual(changed.spec, manifest.spec);
+    assert.deepEqual(changed.metadata.managedFields[0].fieldsV1, fields);
   });
   for (const [name, variant] of [['B3-conflict-reconciliation', 'conflict'], ['B3-uncertain-reconciliation', 'loss-after-commit']] as const) await test(name, async () => {
     const saved = await approved(['patch', 'cm', 'selected', '-n', ns, '--type=merge', '-p', '{"data":{"value":"after"}}']);

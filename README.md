@@ -255,7 +255,7 @@ Rollout history and bounded status use the read path; status requires `--watch=f
 Authorization and identity reviews use their own non-persistent POST APIs and permissions, even in read-only mode.
 A successful identity review grants no data permissions.
 
-Typed requests are decoded using protobufjs 7.6.6 and generated schemas from checksummed official Kubernetes v0.32.2 sources.
+Typed requests are decoded using protobufjs 7.6.6 and generated schemas and JSON field mappings from checksummed official Kubernetes v0.32.2 protobuf and Go contracts.
 Unknown protobuf types are refused before forwarding.
 Regenerate schemas with `node scripts/generate-protobuf.ts`; the pinned Go module cache must contain the source files.
 The configured test verifies both generated metadata and schemas without outbound networking or an Artium fixture.

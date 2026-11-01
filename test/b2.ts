@@ -35,14 +35,18 @@ const core = discovery('v1', [resource('pods', 'Pod', true, ['po']), resource('n
 const groups = fixture('P-003').body;
 groups.groups.push(apiGroup('metrics.k8s.io', 'v1beta1'), apiGroup('synthetic.example', 'v1'));
 groups.groups.at(-1).versions.push({ groupVersion: 'synthetic.example/v1beta1', version: 'v1beta1' });
+groups.groups.push(apiGroup('networking.k8s.io', 'v1'));
 const requests: string[] = [];
 const identities: string[] = [];
 const helperTokens = ['synthetic-helper-first&+/=', 'synthetic-helper-renewed&+/='];
 let variant = '';
 let cancelRequest: (() => void) | undefined;
 let override: { path: string; envelope: Envelope | 'malformed' | 'timeout' | 'oversize' } | undefined;
+const nativePrefix = '/k8s/clusters/c1';
+const rootDecoy = { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'prefixed', namespace: 'synthetic-b3', uid: 'root-decoy', resourceVersion: '1' }, data: { value: 'root-decoy' } };
 const server = createServer({ key: readFileSync(join(directory, 'server.key')), cert: readFileSync(join(directory, 'server.crt')) }, (request, response) => {
   requests.push(request.url!);
+  if (request.url!.startsWith(nativePrefix + '/')) request.url = request.url!.slice(nativePrefix.length);
   const url = new URL(request.url!, 'https://127.0.0.1');
   const path = url.pathname;
   if (variant === 'cancel') { cancelRequest?.(); return; }
@@ -58,13 +62,17 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
   };
   identities.push(request.headers.authorization ?? '');
   if (!['synthetic-selected-token', ...helperTokens].some(token => request.headers.authorization === `Bearer ${token}`)) return send({ status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } });
+  if (variant === 'native-prefix' && !requests.at(-1)!.startsWith(nativePrefix + '/') && path.startsWith('/api/v1/namespaces/synthetic-b3/configmaps')) {
+    if (request.method !== 'GET') rootDecoy.data.value = 'wrong-cluster-write';
+    return json(rootDecoy);
+  }
   if (override?.path === path) {
     if (override.envelope === 'timeout') return; // Server remains open until the client's real deadline cancels it.
     if (override.envelope === 'malformed') { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{broken'); return; }
     if (override.envelope === 'oversize') { response.writeHead(200); response.end('x'.repeat(5 * 1024 * 1024)); return; }
     return send(override.envelope);
   }
-  if (mutationFixture(request, response)) return;
+  if (mutationFixture(request, response, variant === 'native-prefix' && request.method === 'PATCH')) return;
   if (path === '/version') return send(fixture('P-001'));
   if (path === '/api') return send(fixture('P-002'));
   if (path === '/apis') return json(groups);
@@ -427,6 +435,42 @@ try {
   });
   }
   await checkMutations({ run, check, environment, directory, requests });
+  await check('R6-native-prefix-all-operation-paths', async () => local(async () => {
+    variant = 'native-prefix'; environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    const settings = structuredClone(nativeSettings);
+    settings.clusters[0]!.cluster.server += nativePrefix;
+    settings.contexts[0]!.context.namespace = 'synthetic-b3';
+    writeFileSync(nativeFile, JSON.stringify(settings));
+    const before = structuredClone(rootDecoy);
+    const native = async (args: string[]): Promise<any> => {
+      const result = await run(['--native-config', nativeFile, ...args]);
+      assert.equal(result.code, 0, result.stdout + result.stderr); return decode(result.stdout);
+    };
+    try {
+      const saved = await native(['prepare', '--', 'create', 'configmap', 'prefixed', '-n', 'synthetic-b3', '--from-literal=value=selected']);
+      const preview = await native(['preview', saved.request]);
+      const committed = await native(['confirm', saved.request, '--digest', preview.digest]);
+      assert.equal(committed.state, 'complete');
+      await native(['server-dry-run', '--', 'patch', 'configmap', 'prefixed', '-n', 'synthetic-b3', '--type=merge', '-p', '{"data":{"value":"dry-run"}}']);
+      assert.equal((await native(['auth', 'whoami'])).reviews[0].status.userInfo.username, 'synthetic-identity');
+      assert.equal((await native(['auth', 'can-i', 'get', 'configmaps', '-n', 'synthetic-b3'])).reviews[0].status.allowed, true);
+      const patch = await native(['prepare', '--', 'patch', 'configmap', 'prefixed', '-n', 'synthetic-b3', '--type=merge', '-p', '{"data":{"value":"reconciled"}}']);
+      const patchPreview = await native(['preview', patch.request]);
+      const args = ['--native-config', nativeFile, 'confirm', patch.request, '--digest', patchPreview.digest];
+      const uncertain = await run(args);
+      assert.equal(uncertain.code, 1, uncertain.stdout + uncertain.stderr);
+      assert.equal((decode(uncertain.stdout) as any).results[0].observed[0].name, 'prefixed');
+      const start = requests.length;
+      const reconciled = await run(args);
+      assert.equal(reconciled.code, 1, reconciled.stdout + reconciled.stderr);
+      assert.equal((decode(reconciled.stdout) as any).results.at(-1).outcome, 'reconciled_without_retry');
+      assert.deepEqual(requests.slice(start), [nativePrefix + '/api/v1/namespaces/synthetic-b3/configmaps/prefixed']);
+      assert(requests.every(path => path.startsWith(nativePrefix + '/')), JSON.stringify(requests));
+      assert.deepEqual(rootDecoy, before);
+    } finally {
+      writeFileSync(nativeFile, JSON.stringify(nativeSettings)); environment.KUBERNETES_AXI_READ_ONLY = 'true';
+    }
+  }));
 } finally {
   server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
   console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4', 'B3.1', 'B3.2'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,

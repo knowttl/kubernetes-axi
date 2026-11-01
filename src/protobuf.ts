@@ -20,8 +20,12 @@ function normalize(type: Type, message: Message): unknown {
     const nanos = Number(value.nanos ?? 0).toString().padStart(9, '0').replace(/0+$/, '');
     return new Date(seconds * 1000).toISOString().replace('.000Z', `${nanos ? `.${nanos}` : ''}Z`);
   }
-  if (name === 'RawExtension' || name === 'FieldsV1') return value.raw ? JSON.parse(Buffer.from(String(value.raw), 'base64').toString()) as unknown : {};
+  if (name === 'RawExtension' || name === 'FieldsV1') {
+    const raw = name === 'FieldsV1' ? value.Raw : value.raw;
+    return raw ? JSON.parse(Buffer.from(String(raw), 'base64').toString()) as unknown : {};
+  }
   if (name === 'ExtraValue') return value.items ?? [];
+  const result: Record<string, unknown> = {};
   for (const field of type.fieldsArray) {
     if (!Object.hasOwn(value, field.name)) continue;
     const original = (message as unknown as Record<string, unknown>)[field.name];
@@ -30,8 +34,12 @@ function normalize(type: Type, message: Message): unknown {
       value[field.name] = field.map ? Object.fromEntries(Object.entries(original as Record<string, Message>).map(([key, item]) => [key, normalize(nested, item)])) :
         field.repeated ? (original as Message[]).map(item => normalize(nested, item)) : normalize(nested, original as Message);
     } else if (typeof value[field.name] === 'number' && !Number.isSafeInteger(value[field.name])) throw new Failure('UPSTREAM_INVALID', 'The protobuf body contains an integer outside the exact JSON range.');
+    const jsonName = field.getOption('kubernetesJsonName') as string | undefined;
+    if (jsonName === undefined) throw new Failure('PROTOBUF_UNSUPPORTED', 'The protobuf field has no pinned JSON contract.');
+    if (jsonName === '') Object.assign(result, value[field.name]);
+    else if (jsonName !== '-') result[jsonName] = value[field.name];
   }
-  return value;
+  return result;
 }
 
 export function decodeKubernetes(bytes: Buffer): unknown {

@@ -61,9 +61,11 @@ function publicBody(value: unknown, secret = false): unknown {
   if (!value || typeof value !== 'object') return value;
   const body = value as Record<string, unknown>;
   secret ||= body.kind === 'Secret';
+  const pointer = typeof body.path === 'string' ? body.path.split('/').slice(1).map(part => part.replaceAll('~1', '/').replaceAll('~0', '~')) : [];
+  const protectedValue = pointer.some(key => secret && ['data', 'binaryData', 'stringData', 'annotations'].includes(key) || key === 'kubectl.kubernetes.io/last-applied-configuration');
   // Secret payloads and credential-bearing annotations never enter public previews.
   return Object.fromEntries(Object.entries(body).map(([key, item]) => [key,
-    secret && ['data', 'binaryData', 'stringData', 'annotations'].includes(key) || key === 'kubectl.kubernetes.io/last-applied-configuration' ? '[REDACTED]' : publicBody(item, secret)]));
+    key === 'value' && protectedValue || secret && ['data', 'binaryData', 'stringData', 'annotations'].includes(key) || key === 'kubectl.kubernetes.io/last-applied-configuration' ? '[REDACTED]' : publicBody(item, secret)]));
 }
 
 function snapshot(path: string, reply: Reply): Snapshot {
@@ -119,7 +121,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
     redactor.register(token, cert, key);
     const payload = wire ?? (body === undefined ? undefined : JSON.stringify(body));
     return await new Promise<Reply>((resolve, reject) => {
-      const call = request(new URL(path, cluster.server), { method, ca: Buffer.from(cluster['certificate-authority-data'], 'base64'),
+      const call = request(new URL(cluster.server.replace(/\/$/, '') + path), { method, ca: Buffer.from(cluster['certificate-authority-data'], 'base64'),
         ...(cluster['tls-server-name'] ? { servername: cluster['tls-server-name'] } : {}), ...(cert ? { cert } : {}), ...(key ? { key } : {}), signal,
         headers: { accept: 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(payload === undefined ? {} : { 'content-type': contentType, 'content-length': Buffer.byteLength(payload) }) },
       }, response => {
@@ -147,6 +149,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
   if (workflow?.kind === 'confirm') {
     requireWrites();
     const { saved, directory, signingKey } = await savedRequest(invocation);
+    if ((saved.plan.changes.some(change => change.operation === 'OP-016') || saved.plan.changes.filter(change => change.method === 'DELETE').length > 1) && !/^(true|1)$/i.test(process.env.KUBERNETES_AXI_COLLECTION_DELETE ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.');
     const binding = mac(signingKey, nativeBinding ?? config);
     if (saved.digest !== workflow.digest || saved.plan.binding !== binding) throw new Failure('PREVIEW_MISMATCH', 'Select the original cluster and identity and supply the exact preview digest.');
     const report = (): object => ({ request: saved.plan.key, state: saved.state, complete: saved.state === 'complete', results: saved.results });
@@ -230,7 +233,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
         // Upstream credentials stay in this process. The child gets a disposable capability.
         if (!incoming.url?.startsWith(`/${capability}/`)) { response.writeHead(403).end(); return; }
         let path = incoming.url.slice(capability.length + 1);
-        const method = incoming.method!;
+        let method = incoming.method!;
         const chunks: Buffer[] = [];
         let size = 0;
         for await (const chunk of incoming) {
@@ -284,6 +287,12 @@ export async function mutationSession(configFile: string, invocation: Invocation
             if (!validDocument(body)) throw new Failure('UPSTREAM_INVALID', 'Invalid mutation body.');
             if (body.metadata?.resourceVersion && body.metadata.resourceVersion !== object.version) throw new Failure('RESOURCE_CONFLICT', 'The supplied resourceVersion conflicts with the selected object.');
             payload = { ...body, metadata: { ...body.metadata, resourceVersion: object.version, uid: object.uid } };
+          } else if (selected.absent && method === 'PATCH' && contentType.includes('apply-patch')) {
+            if (!validDocument(body) || !body.metadata?.name || body.metadata.name !== target.split('/').at(-1)) throw new Failure('UPSTREAM_INVALID', 'Invalid apply creation body.');
+            method = 'POST';
+            url.pathname = target.slice(0, target.lastIndexOf('/'));
+            url.searchParams.delete('force');
+            path = url.pathname + url.search;
           }
           if (changes.length >= 100) throw new Failure('SELECTION_LIMIT', 'Narrow the operation to at most 100 mutations.');
           const bulk = invocation.command.path === 'delete' && (invocation.flags.get('all') === 'true' || invocation.flags.has('selector') || invocation.flags.has('field-selector') || invocation.positionals.length > 2 || invocation.positionals.some(value => value.includes(',')));
@@ -293,7 +302,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
             collection.searchParams.set('fieldSelector', `metadata.name=${object!.name}`);
             path = collection.pathname + collection.search;
           }
-          const change = { operation: bulk ? 'OP-016' : operation(method, url.pathname), method, path, target, contentType, body: payload, wire: JSON.stringify(payload), inputBase64: input.toString('base64') };
+          const change = { operation: bulk ? 'OP-016' : operation(method, url.pathname), method, path, target, contentType: method === 'POST' ? 'application/json' : contentType, body: payload, wire: JSON.stringify(payload), inputBase64: input.toString('base64') };
           changes.push(change);
           {
             // Preparation records intent only. It never sends a mutation upstream.
