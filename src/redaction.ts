@@ -5,7 +5,8 @@ export class Redactor {
     for (const secret of secrets) if (secret) {
       const json = JSON.stringify(secret).slice(1, -1);
       const goJson = json.replace(/[<>&\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
-      for (const form of [secret, json, goJson, encodeURIComponent(secret), Buffer.from(secret).toString('base64')]) {
+      const formEncoded = new URLSearchParams({ value: secret }).toString().slice('value='.length);
+      for (const form of [secret, json, goJson, encodeURIComponent(secret), formEncoded, Buffer.from(secret).toString('base64')]) {
         this.forms.add(form);
         this.forms.add(JSON.stringify(form).slice(1, -1));
       }

@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
 import { mutationFixture, checkMutations } from './b3.ts';
-import { remoteFixture, checkRemote } from './remote.ts';
+import { remoteFixture, checkRemote, executionToken } from './remote.ts';
 
 const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
@@ -63,7 +63,7 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
   };
   identities.push(request.headers.authorization ?? '');
   if (remoteFixture(request, response)) return;
-  if (!['synthetic-selected-token', ...helperTokens].some(token => request.headers.authorization === `Bearer ${token}`)) return send({ status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } });
+  if (!['synthetic-selected-token', executionToken, ...helperTokens].some(token => request.headers.authorization === `Bearer ${token}`)) return send({ status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } });
   if (variant === 'native-prefix' && !requests.at(-1)!.startsWith(nativePrefix + '/') && path.startsWith('/api/v1/namespaces/synthetic-b3/configmaps')) {
     if (request.method !== 'GET') rootDecoy.data.value = 'wrong-cluster-write';
     return json(rootDecoy);

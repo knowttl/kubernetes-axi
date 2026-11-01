@@ -413,9 +413,9 @@ export async function mutationSession(configFile: string, invocation: Invocation
       const directory = join(root(invocation.config), key);
       await privateDirectory(directory);
       const signingKey = randomBytes(32).toString('hex');
-      const display = redactor.value({ command: invocation.command.path, namespace, selected: [...snapshots.values()], changes: changes.map(change => ({ operation: change.operation, method: change.method, path: change.path, change: publicBody(change.body, /\/secrets(?:\/|\?|$)/.test(change.path)) })) }) as object;
+      const display = redactor.value({ command: invocation.command.path, namespace, selected: [...snapshots.values()], changes: changes.map(change => ({ operation: change.operation, method: change.method, path: change.path, change: publicBody(change.body, /\/secrets(?:\/|\?|$)/.test(change.path)) })), ...(execution ? { execution } : {}) }) as object;
       const plan: Plan = { version: 1, key, binding: mac(signingKey, nativeBinding ?? config), namespace, command: invocation.command.path,
-        awaitDeletion: invocation.command.path === 'drain' || invocation.command.path === 'delete' && invocation.flags.get('wait') !== 'false', snapshots: [...snapshots.values()], changes, display: execution ? { ...display, execution } : display, ...(execution ? { execution } : {}) };
+        awaitDeletion: invocation.command.path === 'drain' || invocation.command.path === 'delete' && invocation.flags.get('wait') !== 'false', snapshots: [...snapshots.values()], changes, display, ...(execution ? { execution } : {}) };
       const saved: Saved = { plan, digest: mac(signingKey, plan), state: 'prepared', results: [] };
       await writePrivate(join(directory, 'key'), signingKey);
       await writePrivate(join(directory, 'request.json'), JSON.stringify(saved));

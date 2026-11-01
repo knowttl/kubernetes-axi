@@ -12,6 +12,7 @@ import { deliverCredential } from './private-delivery.ts';
 
 const core = '/api/v1/namespaces/synthetic-remote';
 const token = 'synthetic-issued-only-in-memory+/=';
+export const executionToken = 'synthetic-execution-token+/(opaque)~!=';
 let revision = '1';
 let fallback = false;
 let tokenMode: 'valid' | 'expired' | 'hold' = 'valid';
@@ -22,7 +23,7 @@ const pod = () => ({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'selected'
 export function remoteFixture(incoming: IncomingMessage, response: ServerResponse): boolean {
   const path = new URL(incoming.url!, 'https://local').pathname;
   if (!path.startsWith(core)) return false;
-  const selected = incoming.headers.authorization === 'Bearer synthetic-selected-token';
+  const selected = ['synthetic-selected-token', executionToken].some(token => incoming.headers.authorization === `Bearer ${token}`);
   if (!selected && !(incoming.headers.authorization === `Bearer ${token}` && incoming.method === 'GET' && path === `${core}/pods/selected`)) { response.writeHead(401).end(); return true; }
   if (path.endsWith('/token') && tokenMode === 'hold') { tokenReached?.(); return true; }
   const body = path === `${core}/pods/selected` ? pod() : path === `${core}/serviceaccounts/selected` ? {
@@ -98,7 +99,7 @@ export async function checkRemote(context: {
   const { server, run, check, environment, directory, requests, cli } = context;
   const deliver = (args: string[], cancel = false) => deliverCredential(cli, environment, args, token, cancel ? stop => { tokenReached = stop; } : undefined);
   server.on('upgrade', (incoming, socket, head) => {
-    if (incoming.headers.authorization !== 'Bearer synthetic-selected-token') { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+    if (!['synthetic-selected-token', executionToken].some(token => incoming.headers.authorization === `Bearer ${token}`)) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
     const url = new URL(incoming.url!, 'https://local');
     forwarded.push({ method: incoming.method!, path: url.pathname, query: url.search });
     if (fallback && incoming.method === 'GET') { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
@@ -140,6 +141,37 @@ export async function checkRemote(context: {
       assert.equal(result.stderr, 'diagnostic\n');
       assert.deepEqual(forwarded.map(item => item.method), spdy ? ['GET', 'POST'] : ['GET']);
       assert.equal(new URLSearchParams(forwarded.at(-1)!.query).get('container'), 'selected-container');
+    });
+    for (const spdy of [false, true]) await check(`R1-execution-display-redaction:${spdy ? 'SPDY fallback' : 'WebSocket GET'}`, async () => {
+      const originalToken = environment.SYNTHETIC_TOKEN;
+      environment.SYNTHETIC_TOKEN = executionToken;
+      fallback = spdy; forwarded.length = 0;
+      const commands = ['curl', '--oauth2-bearer', executionToken];
+      try {
+        const prepared = await run(['prepare', '--', 'exec', 'selected', '-n', 'synthetic-remote', '--', ...commands]);
+        assert.equal(prepared.code, 0, prepared.stdout + prepared.stderr);
+        const { request } = decode(prepared.stdout) as { request: string };
+        delete environment.SYNTHETIC_TOKEN;
+        const beforePreview = requests.length;
+        const preview = await run(['preview', request]);
+        assert.equal(preview.code, 0, preview.stdout + preview.stderr);
+        assert.equal(requests.length, beforePreview);
+        const value = decode(preview.stdout) as { digest: string; execution: { argv: string[]; query: string } };
+        assert.equal(value.execution.argv.at(-1), '[REDACTED]');
+        assert.deepEqual(new URLSearchParams(value.execution.query).getAll('command'), ['curl', '--oauth2-bearer', '[REDACTED]']);
+        const saved = JSON.parse(readFileSync(join(directory, 'requests', request, 'request.json'), 'utf8'));
+        assert.deepEqual(saved.plan.display.execution, value.execution);
+        assert.equal(saved.plan.execution.argv.at(-1), executionToken);
+        assert.deepEqual(new URLSearchParams(saved.plan.execution.query).getAll('command'), commands);
+        environment.SYNTHETIC_TOKEN = executionToken;
+        const result = await run(['confirm', request, '--digest', value.digest]);
+        assert.equal(result.code, 0, result.stdout + result.stderr);
+        assert.deepEqual(new URLSearchParams(forwarded.at(-1)!.query).getAll('command'), commands);
+        assert.equal(result.stderr, 'diagnostic\n');
+        for (const output of [prepared, preview, result]) for (const secret of [executionToken, encodeURIComponent(executionToken), new URLSearchParams({ value: executionToken }).toString().slice('value='.length)]) {
+          assert(!(output.stdout + output.stderr).includes(secret));
+        }
+      } finally { environment.SYNTHETIC_TOKEN = originalToken; }
     });
     await check('AC-EXIT-001:remote exit code', async () => {
       fallback = false;
