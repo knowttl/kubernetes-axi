@@ -29,6 +29,25 @@ export class Redactor {
     return data;
   }
 
+  terminalStream(): { push: (bytes: Buffer) => Buffer; end: () => Buffer } {
+    let pending = Buffer.alloc(0);
+    const flush = (final: boolean): Buffer => {
+      const patterns = [...this.forms].map(form => Buffer.from(form)).sort((a, b) => b.length - a.length);
+      const output: Buffer[] = [];
+      let index = 0;
+      while (index < pending.length) {
+        const remaining = pending.subarray(index);
+        if (!final && patterns.some(pattern => remaining.length < pattern.length && pattern.subarray(0, remaining.length).equals(remaining))) break;
+        const match = patterns.find(pattern => remaining.subarray(0, pattern.length).equals(pattern));
+        if (match) { output.push(Buffer.from('[REDACTED]')); index += match.length; }
+        else { output.push(pending.subarray(index, index + 1)); index++; }
+      }
+      pending = Buffer.from(pending.subarray(index));
+      return Buffer.concat(output);
+    };
+    return { push: bytes => { pending = Buffer.concat([pending, bytes]); return flush(false); }, end: () => flush(true) };
+  }
+
   byteStream(): { push: (bytes: Buffer) => Buffer; end: () => Buffer } {
     const patterns = [...this.forms].map(form => Buffer.from(form));
     const hold = Math.max(0, ...patterns.map(pattern => pattern.length - 1));

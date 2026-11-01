@@ -93,6 +93,13 @@ def run(args):
             raise ValueError("offline verification requires a loopback-only network namespace")
         subprocess.run(["ip", "link", "set", "lo", "up"], check=True, capture_output=True, timeout=10)
     pack = args.pack.resolve()
+    if args.command == "task" and args.target in ("B5.1", "B5.2"):
+        if platform.system() != "Linux":
+            raise PendingPrerequisite("B5 currently records Linux terminal and package evidence; native Windows remains pending.")
+        return subprocess.run([
+            "node", str(ROOT / "scripts/verify-b5.ts"), args.target, str(pack),
+            *([str(args.artium.resolve())] if args.artium else []),
+        ], cwd=ROOT, env={**os.environ, "KUBERNETES_AXI_VERIFY_PYTHON": sys.executable}, timeout=3600).returncode
     if args.command == "task" and args.target in ("B4.1", "B4.2", "B4.3"):
         if platform.system() != "Linux":
             raise PendingPrerequisite("B4 hosted journeys require Linux; native Windows commissioning remains pending.")
@@ -148,7 +155,7 @@ def run(args):
             check=True, capture_output=True, text=True, timeout=10,
         ).stdout)
     if args.command == "task" and args.target not in ["B1.1", "B1.2", "B1.3"]:
-        report.update(outcome="pending", prerequisite="Only B1.1, B1.2 and the Linux portion of B1.3 are implemented.")
+        report.update(outcome="pending", prerequisite="This task does not have an implemented offline verifier.")
         print(json.dumps(report, indent=2))
         return 2
     npm = "npm.cmd" if os.name == "nt" else "npm"
@@ -203,7 +210,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["task", "gate", "release"])
-    parser.add_argument("target", nargs="?", help="B1.1, stage number, or release identifier")
+    parser.add_argument("target", nargs="?", help="Task identifier, stage number, or release identifier")
     parser.add_argument("--mode", choices=["offline"], required=True)
     parser.add_argument("--pack", type=Path, required=True)
     parser.add_argument("--artium", type=Path, help="Opt in to real local Artium journeys using a frozen checkout with built dependencies")

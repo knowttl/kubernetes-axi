@@ -15,6 +15,7 @@ import type { Redactor } from './redaction.js';
 import { privateDirectory, readPrivate, writePrivate } from './private-files.js';
 import { remoteSession } from './remote-session.js';
 import { routeEffect } from './route-policy.js';
+import { localTerminal } from './terminal.js';
 
 const execute = promisify(execFile);
 interface Metadata { name?: string; namespace?: string; uid?: string; resourceVersion?: string; continue?: string }
@@ -22,7 +23,7 @@ interface Document { apiVersion?: string; kind?: string; metadata?: Metadata; it
 interface Reply { status: number; body: Document }
 interface Snapshot { path: string; objects: { name: string; namespace: string; uid: string; version: string }[]; absent: boolean; collection: boolean }
 interface Change { operation: string; method: string; path: string; target: string; contentType: string; body: unknown; wire: string; inputBase64: string }
-interface Execution { argv: string[]; target: string; route: string; query: string; stdinSha256?: string }
+interface Execution { argv: string[]; target: string; route: string; query: string; stdinSha256?: string; terminal?: boolean }
 interface Plan { version: 1; key: string; binding: string; command: string; namespace: string; awaitDeletion: boolean; snapshots: Snapshot[]; changes: Change[]; display: object; execution?: Execution }
 interface Saved { plan: Plan; digest: string; state: 'prepared' | 'running' | 'complete' | 'failed'; results: Result[] }
 interface Result { operation: string; method: string; path: string; outcome: string; upstreamStatus?: number; observed?: Snapshot['objects'] }
@@ -100,7 +101,7 @@ function operation(method: string, path: string): string {
 }
 
 export async function mutationSession(configFile: string, invocation: Invocation, namespace: string, redactor: Redactor, signal: AbortSignal, compatibleVersion: (value: unknown) => void, nativeBinding?: string): Promise<{
-  config: object; argv?: string[]; rawPath?: string; prepared?: boolean; finish: (success?: boolean) => Promise<object>; close: () => Promise<void>;
+  config: object; argv?: string[]; rawPath?: string; prepared?: boolean; terminal?: boolean; finish: (success?: boolean) => Promise<object>; close: () => Promise<void>;
 }> {
   const config = JSON.parse(await readFile(configFile, 'utf8')) as Config;
   const cluster = config.clusters[0]!.cluster;
@@ -160,6 +161,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
     if ((saved.plan.changes.some(change => change.operation === 'OP-016') || saved.plan.changes.filter(change => change.method === 'DELETE').length > 1) && !/^(true|1)$/i.test(process.env.KUBERNETES_AXI_COLLECTION_DELETE ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.');
     const binding = mac(signingKey, nativeBinding ?? config);
     if (saved.digest !== workflow.digest || saved.plan.binding !== binding) throw new Failure('PREVIEW_MISMATCH', 'Select the original cluster and identity and supply the exact preview digest.');
+    if (saved.plan.execution?.terminal && (invocation.session || !localTerminal())) throw new Failure('LOCAL_TERMINAL_REQUIRED', 'Confirm this request in a local Linux terminal.');
     if (saved.plan.changes.some(change => change.operation === 'OP-030')) {
       if (!/^(true|1)$/i.test(process.env.KUBERNETES_AXI_ACQUIRE_CREDENTIAL ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Token issuance requires KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true.');
       const fd = invocation.credentialFd;
@@ -201,7 +203,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
     if (saved.plan.execution) {
       const execution = saved.plan.execution;
       const session = await remoteSession(config, saved.plan.namespace, execution.target, execution.route, execution.query, signal);
-      return { ...session, argv: execution.argv, finish: async (success = true) => {
+      return { ...session, argv: execution.argv, ...(execution.terminal ? { terminal: true } : {}), finish: async (success = true) => {
         saved.state = success ? 'complete' : 'failed';
         saved.results.push({ operation: 'OP-017', method: 'CONNECT', path: execution.route, outcome: success ? 'complete' : 'failed' });
         await persist();
@@ -289,12 +291,20 @@ export async function mutationSession(configFile: string, invocation: Invocation
       if (!ports.length || ports.length > 8 || new Set(ports).size !== ports.length || invocation.flags.has('address') && invocation.flags.get('address') !== '127.0.0.1') throw new Failure('USAGE', 'Select one to eight distinct ports bound to loopback.', 2);
       execution = { argv: ['port-forward', name, ...ports.map(port => `0:${port}`), '--namespace', namespace, '--address=127.0.0.1'],
         target, route: `${target}/portforward`, query: '' };
+      if (!invocation.session) execution.terminal = true;
     } else {
-    const containers = (pod.body.spec as { containers?: { name: string }[] } | undefined)?.containers ?? [];
+    const spec = pod.body.spec as { containers?: { name: string; tty?: boolean }[]; ephemeralContainers?: { name: string; tty?: boolean }[] } | undefined;
+    const containers = [...(spec?.containers ?? []), ...(spec?.ephemeralContainers ?? [])];
     const container = invocation.flags.get('container') ?? containers[0]?.name;
-    if (!container || !containers.some(item => item.name === container)) throw new Failure('USAGE', 'Select a container in the named pod.', 2);
-    const query = new URLSearchParams({ container, stdout: 'true', stderr: 'true' });
-    if (!invocation.session) query.set('timeout', '5s');
+    const selected = containers.find(item => item.name === container);
+    if (!container || !selected) throw new Failure('USAGE', 'Select a container in the named pod.', 2);
+    const terminal = !invocation.session && invocation.flags.get('stdin') === 'true';
+    // kubectl disables TTY without stdin; attach also follows the container's
+    // allocated TTY rather than the requested flag alone.
+    const tty = invocation.flags.get('stdin') === 'true' && (invocation.command.path === 'attach' ? selected.tty === true : invocation.flags.get('tty') === 'true');
+    const query = new URLSearchParams({ container, stdout: 'true', ...(!tty ? { stderr: 'true' } : {}) });
+    if (tty) query.set('tty', 'true');
+    if (!invocation.session && !terminal) query.set('timeout', '5s');
     if (invocation.flags.get('stdin') === 'true') query.set('stdin', 'true');
     if (invocation.command.path === 'exec') {
       const delimiter = invocation.argv.indexOf('--');
@@ -302,6 +312,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
       for (const arg of invocation.argv.slice(delimiter + 1)) query.append('command', arg);
     }
     execution = { argv: [...invocation.argv], target, route: `${target}/${invocation.command.path}`, query: query.toString() };
+    if (terminal) execution.terminal = true;
     if (invocation.inputSha256) execution.stdinSha256 = invocation.inputSha256;
     // Container flags must precede the remote command delimiter.
     execution.argv.splice(invocation.argv.indexOf('--') < 0 ? execution.argv.length : invocation.argv.indexOf('--'), 0, '--namespace', namespace, '--container', container);

@@ -119,11 +119,50 @@ Generated grammar:
 - `server-dry-run` is an explicit `dryRun=All` API operation that never issues a confirmation.
 - Token issuance (`create token`) additionally needs `KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true`, a duration of at most one hour and a private inherited pipe passed as `--credential-fd <fd>` to `confirm`.
   The token is delivered once and never stored.
-- Credential overrides, server overrides, impersonation, TLS bypass, local helpers, plugins, Kustomize helpers, interactive sessions and generic proxy listeners are refused.
+- Credential overrides, server overrides, impersonation, TLS bypass and generic proxy listeners are refused.
   Unknown flags are rejected before any effect.
+- In 0.1.x, editors, plugins and external render/diff helpers are refused before effects, including when writes are enabled.
+  Run those tools outside the CLI, then submit their manifest or patch through preparation, preview and confirmation.
+  An opt-in two-stage local execution design is tracked in [issue 30](https://github.com/knowttl/kubernetes-axi/issues/30).
+- Raw reads are classified by their API route, including nested proxy routes and query-based watches.
+  Raw execution, token issuance and proxy connections cannot bypass their explicit capability boundaries.
+  Raw resource mutations still require preparation and confirmation.
 - Secrets in output are redacted, including literal, escaped, URI, form and base64 forms.
   Public native Secret reads are refused; `get secrets` returns metadata only.
 - Runtime digest checks refuse stale generated metadata before credential resolution or API calls.
+
+### Linux terminal sessions
+
+Non-interactive `exec` and `attach` use the prepare, preview and confirm workflow.
+Preparation freezes the named pod, container and exact command argument sequence without opening a stream.
+Confirmation checks the selected identity, cluster and pod snapshot before invoking pinned kubectl.
+The private gateway supports WebSocket GET and kubectl's SPDY fallback, preserves separate stdout/stderr, and returns the remote exit code.
+Both operations require `KUBERNETES_AXI_READ_ONLY=false`.
+
+Linux standalone `exec` and `attach` support `-it` when stdin and stdout are real terminals.
+Preparation freezes the terminal settings without opening a stream; confirmation requires a terminal too.
+The pinned kubectl runs under a PTY using util-linux `script` at `/usr/bin/script`, with input, resize, redacted output and cancellation cleanup.
+No terminal transcript is recorded.
+Remote exit codes are preserved; local SIGINT, SIGTERM and SIGHUP cancellations return 130, 143 and 129.
+Piped interactive invocations and hosted TTY requests return `LOCAL_TERMINAL_REQUIRED` before opening a stream.
+Native Windows terminal support remains pending.
+
+`debug --attach=false` prepares its named create or ephemeral-container patch through the mutation policy.
+For interactive debugging, confirm that change first, then prepare and confirm `attach -it -c <debugger>` to the named pod from a local Linux terminal.
+Helper-backed mutations and execution remain refused.
+
+Native `get --watch` and `logs --follow` stream until cancellation in a local Linux terminal.
+Local port forwarding uses the same preparation and confirmation sequence, binds loopback, and selects one to eight numeric remote ports with automatically assigned local ports.
+Native completion, options, plugin discovery and `version --client=true` run offline without credentials.
+
+```sh
+kubernetes-axi --profile <name> prepare -- exec <pod> -n <namespace> -it -- sh
+kubernetes-axi --profile <name> preview <request-key>
+kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>
+kubernetes-axi --profile <name> native -- get pods -n <namespace> --watch
+kubernetes-axi --profile <name> prepare -- port-forward <pod> 8080 -n <namespace>
+kubernetes-axi native -- completion bash
+```
 
 ### Native identity
 
@@ -221,8 +260,8 @@ Insecure or redirected paths fail before credentials are read.
 
 - Native Windows execution, ACL conformance and helper channels are pending; Linux is the verified platform.
 - Live cluster commissioning and complete command coverage are pending.
-- `diff` returns `NOT_YET_SUPPORTED_STAGED`; it needs a later file and helper capability.
-- Standalone mode has no direct file transfer, proxy listener or interactive session; TTY and stdin requests return `LOCAL_TERMINAL_REQUIRED`.
+- In 0.1.x, local editors, plugins and external render/diff helpers are refused before effects; use externally produced manifests or patches with the preview and confirmation workflow.
+- Standalone mode has no direct file transfer or generic proxy listener; interactive exec/attach requires a local Linux terminal.
 - Hosted transfers, byte sessions and port forwarding are verified only against a frozen local Artium fixture, not a released Artium.
 - Terminal-bound helpers and legacy auth-provider plugins fail explicitly.
 - Supported server minors are listed in [kubectl-pins.json](kubectl-pins.json).
@@ -237,7 +276,15 @@ Verification also uses Python 3.12.3 and OpenSSL 3.0.13, plus `unshare`, `ip` an
 npm ci
 npm run check
 python3 scripts/verify.py task B1.1 --mode offline --pack evidence
+python3 scripts/verify.py task B5.1 --mode offline --pack evidence
+python3 scripts/verify.py task B5.2 --mode offline --pack evidence
 ```
+
+The verifier uses Python 3; use `python3` on Linux hosts without a `python` alias.
+B5.2 runs cumulative package journeys, strict types and generated-contract checks.
+Artium hosted proof is optional for the 0.1.x package gate.
+Add `--artium <frozen-checkout>` to either B5 command for optional hosted journeys and the selected frozen Artium aggregate.
+When `--artium` is selected, private Artium hygiene and container acceptance require separately recorded owner evidence; missing checks report pending.
 
 - For offline builds, place the official kubectl binaries named in [kubectl-pins.json](kubectl-pins.json) in `vendor/` before installing; the build checks their SHA256 digests and otherwise downloads only from the pinned official URL.
 - `npm test` runs inside a loopback-only Linux namespace, so outbound network access is denied.

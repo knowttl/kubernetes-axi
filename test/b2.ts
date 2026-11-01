@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, chmodSync, symlinkSync, readdirSync, existsSync, copyFileSync } from 'node:fs';
 import { createServer } from 'node:https';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
@@ -127,14 +127,21 @@ writeFileSync(config, JSON.stringify({ version: 1, defaultProfile: 'selected', p
 const prefix = join(directory, 'installed');
 const npm = 'npm';
 const packed = JSON.parse(execFileSync(npm, ['pack', '--offline', '--json', '--pack-destination', directory], { cwd: root, encoding: 'utf8' }));
-execFileSync(npm, ['install', '--offline', '--prefix', prefix, '--ignore-scripts', '--no-audit', '--no-fund', join(directory, packed[0].filename)], { stdio: 'pipe' });
+const hooks = ['.claude/settings.json', '.codex/hooks.json', '.config/opencode/plugins/session.ts'];
+for (const path of hooks) { mkdirSync(join(directory, path, '..'), { recursive: true }); writeFileSync(join(directory, path), 'synthetic-user-owned-hook\n'); }
+execFileSync(npm, ['install', '--offline', '--prefix', prefix, '--no-audit', '--no-fund', join(directory, packed[0].filename)], { stdio: 'pipe',
+  env: { ...process.env, HOME: directory, USERPROFILE: directory, APPDATA: directory, XDG_CONFIG_HOME: join(directory, '.config'), npm_config_cache: process.env.npm_config_cache ?? join(homedir(), '.npm') } });
 const installed = join(prefix, 'node_modules/@knowttl/kubernetes-axi');
 const cli = join(installed, 'bin/kubernetes-axi.js');
+const programs = join(directory, 'programs'); mkdirSync(programs);
+const program = join(programs, 'kubectl-synthetic');
+copyFileSync(join(root, 'test/local-program.ts'), program); chmodSync(program, 0o700);
+const programMarker = join(directory, 'local-program-marker');
 const temporary = join(directory, 'invocations');
 mkdirSync(temporary, { mode: 0o700 });
 const environment: NodeJS.ProcessEnv = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('KUBERNETES_') && key !== 'KUBECONFIG')),
-  HOME: directory, USERPROFILE: directory, APPDATA: directory, XDG_CONFIG_HOME: directory,
+  HOME: directory, USERPROFILE: directory, APPDATA: directory, XDG_CONFIG_HOME: join(directory, '.config'),
   TMPDIR: temporary, TMP: temporary, TEMP: temporary,
   KUBERNETES_AXI_CONFIG: config, SYNTHETIC_TOKEN: 'synthetic-selected-token', KUBECONFIG: join(directory, 'poison-kubeconfig'),
   KUBERNETES_AXI_READ_ONLY: 'true',
@@ -478,8 +485,51 @@ try {
     finally { writeFileSync(path, saved); }
   });
   }
-  await checkMutations({ run, check, environment, directory, requests, cli });
+  await check('B5.1-native:client version and completion work without credentials', async () => {
+    const token = environment.SYNTHETIC_TOKEN;
+    environment.SYNTHETIC_TOKEN = '';
+    try {
+      const version = await run(['native', '--', 'version', '--client=true', '-o', 'json']);
+      assert.equal(version.code, 0, version.stdout + version.stderr);
+      assert.equal(JSON.parse(version.stdout).clientVersion.gitVersion, 'v1.32.2');
+      const completion = await run(['native', '--', 'completion', 'bash']);
+      assert.equal(completion.code, 0, completion.stdout + completion.stderr);
+      const source = join(directory, 'completion.bash'); writeFileSync(source, completion.stdout);
+      const registration = execFileSync('bash', ['-c', 'source "$1"; complete -p kubectl', 'completion', source], { encoding: 'utf8', env: environment });
+      assert.match(registration, /-F __start_kubectl kubectl/);
+      assert.equal(requests.length, 0);
+    } finally { environment.SYNTHETIC_TOKEN = token; }
+  });
+  await check('B5.2-package:installation and help preserve user-owned session hooks', async () => {
+    assert.equal((await run(['--help'])).code, 0);
+    for (const path of hooks) assert.equal(readFileSync(join(directory, path), 'utf8'), 'synthetic-user-owned-hook\n');
+  });
+  await check('B5.1-native:plugin discovery never executes the discovered program', async () => {
+    const saved = { PATH: environment.PATH, SYNTHETIC_PROGRAM_MARKER: environment.SYNTHETIC_PROGRAM_MARKER };
+    environment.PATH = programs + ':' + environment.PATH; environment.SYNTHETIC_PROGRAM_MARKER = programMarker;
+    try {
+      const result = await run(['native', '--', 'plugin', 'list']);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert(result.stdout.includes(program), result.stdout);
+      assert.equal(existsSync(programMarker), false);
+      assert.equal(requests.length, 0);
+    } finally { Object.assign(environment, saved); }
+  });
+  for (const args of [
+    ['native', '--', 'edit', 'configmap', 'selected'], ['prepare', '--', 'edit', 'configmap', 'selected'],
+    ['native', '--', 'synthetic'], ['native', '--', 'kustomize', '.', '--enable-helm', '--helm-command', program], ['native', '--', 'diff', '-f', 'unopened.yaml'],
+  ]) await check(`B5.1-native:local program refused before effects ${args.join(' ')}`, async () => {
+    const saved = { PATH: environment.PATH, KUBE_EDITOR: environment.KUBE_EDITOR, KUBECTL_EXTERNAL_DIFF: environment.KUBECTL_EXTERNAL_DIFF,
+      SYNTHETIC_PROGRAM_MARKER: environment.SYNTHETIC_PROGRAM_MARKER, KUBERNETES_AXI_READ_ONLY: environment.KUBERNETES_AXI_READ_ONLY };
+    Object.assign(environment, { PATH: programs + ':' + environment.PATH, KUBE_EDITOR: program, KUBECTL_EXTERNAL_DIFF: program,
+      SYNTHETIC_PROGRAM_MARKER: programMarker, KUBERNETES_AXI_READ_ONLY: 'false' });
+    try {
+      const result = await run(args); assert.notEqual(result.code, 0); assert.equal(requests.length, 0);
+      assert.equal(existsSync(programMarker), false);
+    } finally { Object.assign(environment, saved); }
+  });
   await checkRemote({ server, run, check, environment, directory, requests, cli });
+  await checkMutations({ run, check, environment, directory, requests, cli });
   if (selectedArtium) await checkB4Host({ artium: selectedArtium, directory, cli, environment, server, check, run });
   await check('R6-native-prefix-all-operation-paths', async () => local(async () => {
     variant = 'native-prefix'; environment.KUBERNETES_AXI_READ_ONLY = 'false';

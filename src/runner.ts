@@ -15,6 +15,8 @@ import { nativeConfig, inspectNative } from './native.js';
 import type { Redactor } from './redaction.js';
 import { mutationSession } from './mutations.js';
 import { byteProcess, type ByteExecution } from './byte-process.js';
+import { localTerminal, terminalProcess } from './terminal.js';
+import { clientOnly } from './grammar.js';
 
 const execute = promisify(execFile);
 const pins = JSON.parse(await readFile(new URL('../kubectl-pins.json', import.meta.url), 'utf8')) as {
@@ -103,10 +105,13 @@ export async function readCluster(identity: Identity | undefined, invocation: In
   };
   const config = join(directory, 'config.json');
   const cancellation = new AbortController();
-  const cancel = (): void => cancellation.abort();
+  const cancel = (): void => cancellation.abort('SIGINT');
+  const terminate = (): void => cancellation.abort('SIGTERM');
+  const hangup = (): void => cancellation.abort('SIGHUP');
   byteExecution?.signal.addEventListener('abort', cancel, { once: true });
-  process.once('SIGTERM', cancel);
+  process.once('SIGTERM', terminate);
   process.once('SIGINT', cancel);
+  process.once('SIGHUP', hangup);
   const deadline = Date.now() + 15_000;
   let requests = 0;
   let retainedBytes = 0;
@@ -115,7 +120,11 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     TMPDIR: directory, TEMP: directory, TMP: directory,
     ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR } : {}),
   };
-  const invoke = async (args: string[], format: 'json' | 'text' | 'native' = 'json'): Promise<unknown> => {
+  const invoke = async (args: string[], format: 'json' | 'text' | 'native' = 'json', terminal = false): Promise<unknown> => {
+    if (terminal) {
+      const exitCode = await terminalProcess(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=0', ...args], env, cancellation.signal, redactor);
+      return { native: true, stdout: '', stderr: '', exitCode };
+    }
     if (format === 'native' && byteExecution) {
       const exitCode = await byteProcess(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=0', ...args], env, byteExecution, redactor);
       return { native: true, stdout: '', stderr: '', exitCode };
@@ -169,6 +178,10 @@ export async function readCluster(identity: Identity | undefined, invocation: In
   let source = identity?.source ?? '';
   let binding = JSON.stringify(identity);
   try {
+    if (clientOnly(invocation)) {
+      if (invocation.command.path === 'plugin list') env.PATH = process.env.PATH;
+      return await invoke(invocation.argv, 'native') as NativeOutput;
+    }
     if (invocation.nativeConfig && invocation.native && invocation.command.path.startsWith('config ')) {
       if (invocation.nativeConfig === 'ambient') throw new Failure('CONFIG_INVALID', 'Native config operations require one explicitly selected source file.');
       if (invocation.command.effect === 'localWrite' && /^(true|1)$/i.test(process.env.KUBERNETES_AXI_READ_ONLY ?? '')) throw new Failure('READ_ONLY', 'Native config writes are disabled by read-only policy.');
@@ -208,7 +221,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
         if (!invocation.flags.has('raw') && invocation.command.flags.some(flag => flag.name === 'dry-run')) args.push('--dry-run=server');
         if (invocation.command.flags.some(flag => flag.name === 'wait')) args.push('--wait=false');
       }
-      const result = await invoke(args, 'native') as NativeOutput;
+      const result = await invoke(args, 'native', Boolean(session.terminal)) as NativeOutput;
       if (session.argv) {
         await session.finish(result.exitCode === 0);
         return result;
@@ -232,7 +245,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     const version = await raw('/version');
     compatibleVersion(version);
     const provenance = { source, kubectlVersion: pins.version, kubectlSha256: digest };
-    if (invocation.native) return await invoke(invocation.argv, 'native') as NativeOutput;
+    if (invocation.native) return await invoke(invocation.argv, 'native', !invocation.session && localTerminal() && invocation.command.flags.some(flag => flag.effect === 'stream' && (flags.get(flag.name) ?? flag.default) !== 'false')) as NativeOutput;
     const command = invocation.command.path;
     if (command === 'version') return { ...provenance, gitVersion: version.gitVersion };
     if (command === 'logs') {
@@ -283,8 +296,9 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     cancellation.abort();
     await close();
     await rm(directory, { recursive: true, force: true });
-    process.removeListener('SIGTERM', cancel);
+    process.removeListener('SIGTERM', terminate);
     process.removeListener('SIGINT', cancel);
+    process.removeListener('SIGHUP', hangup);
     byteExecution?.signal.removeEventListener('abort', cancel);
   }
 }
