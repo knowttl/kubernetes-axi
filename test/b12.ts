@@ -71,7 +71,7 @@ const api = createServer({ key: await readFile(join(root, 'server.key')), cert: 
   ca, requestCert: true, rejectUnauthorized: false }, (request, response) => {
   const path = new URL(request.url!, 'https://localhost').pathname;
   const socket = request.socket as TLSSocket;
-  const identity = socket.authorized && socket.getPeerCertificate().subject.CN === 'synthetic-client'
+  const identity = socket.authorized && socket.getPeerCertificate().subject?.CN === 'synthetic-client'
     ? 'certificate' : (request.headers.authorization ?? '').replace(/^Bearer /, '');
   requests.push({ path, identity });
   if (identity !== selected && identity !== 'certificate' && !(identity === issued && request.method === 'GET' && path === podPath)) { response.writeHead(401).end(); return; }
