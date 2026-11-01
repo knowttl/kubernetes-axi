@@ -147,7 +147,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       for (const [reasons, code, upstreamStatus, message] of errors) if (reason && reasons.includes(reason)) throw new Failure(code, message, 1, { upstreamStatus, cause: code });
       if (!reason) {
         if (args.includes('explain') && /^(?:error: )?the server doesn't have a resource type /mi.test(stderr)) throw new Failure('RESOURCE_NOT_FOUND', 'The requested resource type was not found in discovery.');
-        if (args[0] === 'logs' && /^error: container .+ is not valid for pod /m.test(stderr)) throw new Failure('BAD_REQUEST', 'The selected container does not exist in this pod.');
+        if (invocation.command.path === 'logs' && /^error: container .+ is not valid for pod /m.test(stderr)) throw new Failure('BAD_REQUEST', 'The selected container does not exist in this pod.');
         if (/^(?:error: )?(?:Unable to connect to the server: |net\/http: |context )[^\n]*(?:deadline exceeded|timed out|Timeout)/m.test(stderr)) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded request timed out.', 1, { cause: 'timeout' });
         if (args.includes('explain') && /^error: (?:failed to (?:download|fetch) openapi|error loading schema)/mi.test(stderr)) {
           // Explain loses HTTP failure reasons; a raw read retains the server's status.

@@ -272,6 +272,20 @@ try {
     assert.equal((decode(result.stdout) as any).error.code, code, result.stdout + result.stderr + upstream.stderr);
     if (path && !args.some(arg => arg === '-c')) assert.equal((decode(result.stdout) as any).error.upstreamStatus, status);
   });
+  await check('live-D2-invalid-container-namespace-prefix', async () => {
+    const result = await run(['-n', 'kube-system', 'logs', 'resource-008', '-c', 'missing']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as any).error.code, 'BAD_REQUEST', result.stdout);
+    assert.equal(result.stderr, '');
+    assert(!requests.some(path => path.includes('/log')));
+  });
+  await check('live-D2-invalid-container-native-context-prefix', async () => local(async () => {
+    const result = await run(['--native-config', nativeFile, '--context', 'local', 'logs', 'resource-008', '-c', 'missing']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as any).error.code, 'BAD_REQUEST', result.stdout);
+    assert.equal(result.stderr, '');
+    assert(!requests.some(path => path.includes('/log')));
+  }));
   await check('live-D3-missing-exec-pod', async () => {
     environment.KUBERNETES_AXI_READ_ONLY = 'false';
     try {
