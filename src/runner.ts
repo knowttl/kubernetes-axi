@@ -15,7 +15,6 @@ import { nativeConfig, inspectNative } from './native.js';
 import type { Redactor } from './redaction.js';
 import { mutationSession } from './mutations.js';
 import { byteProcess, type ByteExecution } from './byte-process.js';
-import { localTerminal, terminalProcess } from './terminal.js';
 import { clientOnly } from './grammar.js';
 
 const execute = promisify(execFile);
@@ -120,11 +119,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     TMPDIR: directory, TEMP: directory, TMP: directory,
     ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR } : {}),
   };
-  const invoke = async (args: string[], format: 'json' | 'text' | 'native' = 'json', terminal = false): Promise<unknown> => {
-    if (terminal) {
-      const exitCode = await terminalProcess(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=0', ...args], env, cancellation.signal, redactor);
-      return { native: true, stdout: '', stderr: '', exitCode };
-    }
+  const invoke = async (args: string[], format: 'json' | 'text' | 'native' = 'json'): Promise<unknown> => {
     if (format === 'native' && byteExecution) {
       const exitCode = await byteProcess(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=0', ...args], env, byteExecution, redactor);
       return { native: true, stdout: '', stderr: '', exitCode };
@@ -221,7 +216,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
         if (!invocation.flags.has('raw') && invocation.command.flags.some(flag => flag.name === 'dry-run')) args.push('--dry-run=server');
         if (invocation.command.flags.some(flag => flag.name === 'wait')) args.push('--wait=false');
       }
-      const result = await invoke(args, 'native', Boolean(session.terminal)) as NativeOutput;
+      const result = await invoke(args, 'native') as NativeOutput;
       if (session.argv) {
         await session.finish(result.exitCode === 0);
         return result;
@@ -245,7 +240,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     const version = await raw('/version');
     compatibleVersion(version);
     const provenance = { source, kubectlVersion: pins.version, kubectlSha256: digest };
-    if (invocation.native) return await invoke(invocation.argv, 'native', !invocation.session && localTerminal() && invocation.command.flags.some(flag => flag.effect === 'stream' && (flags.get(flag.name) ?? flag.default) !== 'false')) as NativeOutput;
+    if (invocation.native) return await invoke(invocation.argv, 'native') as NativeOutput;
     const command = invocation.command.path;
     if (command === 'version') return { ...provenance, gitVersion: version.gitVersion };
     if (command === 'logs') {

@@ -12,14 +12,9 @@ import { deliverCredential } from './private-delivery.ts';
 import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { dirname } from 'node:path';
-import { terminal } from './terminal.ts';
-import { portForwardBoundary } from './port-forward.ts';
-import { createConnection } from 'node:net';
 
 const core = '/api/v1/namespaces/synthetic-remote';
 const token = 'synthetic-issued-only-in-memory+/=';
-const credentialOutput = 'password: canary-password\n{"clientSecret":"canary-json"}\neyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl\n-----BEGIN RSA PRIVATE KEY-----\ncanary-key\n-----END RSA PRIVATE KEY-----\nhttps://synthetic.invalid/?sig=canary-signature&x=1\n';
-const credentialSafe = 'password: [REDACTED]\n{"clientSecret":"[REDACTED]"}\n[REDACTED]\n[REDACTED]\nhttps://synthetic.invalid/?[REDACTED]&x=1\n';
 export const executionToken = 'synthetic-execution-token+/(opaque)~!=';
 let revision = '1';
 let fallback = false;
@@ -41,7 +36,6 @@ export function remoteFixture(incoming: IncomingMessage, response: ServerRespons
   if (path === `${core}/pods/selected/log`) {
     response.writeHead(200, { 'content-type': 'text/plain' });
     response.write('synthetic followed log line\n'.repeat(8));
-    response.write(credentialOutput);
     if (url.searchParams.get('follow') !== 'true') response.end();
     return true;
   }
@@ -147,38 +141,6 @@ export async function checkRemote(context: {
     if (incoming.method === 'GET') {
       const accept = createHash('sha1').update(incoming.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
       socket.write(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: v5.channel.k8s.io\r\n\r\n`);
-      if (commands[0] === 'terminal-probe' || url.pathname.endsWith('/attach') && url.searchParams.get('tty') === 'true') {
-        socket.write(webSocketFrame(1, 'terminal-ready\n'));
-        let pending = head;
-        socket.on('data', (chunk: Buffer) => {
-          pending = Buffer.concat([pending, chunk]);
-          while (pending.length >= 6) {
-            const marker = pending[1]! & 127;
-            const header = marker === 126 ? 4 : 2;
-            if (pending.length < header + 4) return;
-            const length = marker === 126 ? pending.readUInt16BE(2) : marker;
-            if (pending.length < header + 4 + length) return;
-            const mask = pending.subarray(header, header + 4);
-            const payload = Buffer.from(pending.subarray(header + 4, header + 4 + length));
-            for (let index = 0; index < payload.length; index++) payload[index] = payload[index]! ^ mask[index % 4]!;
-            pending = pending.subarray(header + 4 + length);
-            if (payload[0] === 4) socket.write(webSocketFrame(1, 'size:' + payload.subarray(1).toString() + '\n'));
-            if (payload[0] === 0) {
-              const input = payload.subarray(1).toString();
-              socket.write(webSocketFrame(1, 'input:' + payload.subarray(1).toString('hex') + '\n'));
-              if (input.includes('secret')) {
-                socket.write(webSocketFrame(1, 'synthetic-selected-'));
-                socket.write(webSocketFrame(1, 'token\n'));
-                socket.write(webSocketFrame(1, credentialOutput));
-                socket.write(webSocketFrame(2, credentialOutput));
-                socket.write(webSocketFrame(1, 'ready> '));
-              }
-              if (input.includes('exit')) socket.end(Buffer.concat([webSocketFrame(3, input.includes('exitfail') ? JSON.stringify({ status: 'Failure', reason: 'NonZeroExitCode', details: { causes: [{ reason: 'ExitCode', message: '17' }] } }) : status), Buffer.from([0x88, 2, 3, 232])]));
-            }
-          }
-        });
-        return;
-      }
       if (commands[0] === 'hold') { socket.write(webSocketFrame(1, 'held')); socket.resume(); return; }
       const tarUpload = JSON.stringify(commands) === JSON.stringify(['tar', 'xf', '-', '-C', '/files']);
       const tarDownload = commands.length === 7 && commands.slice(0, 6).join(' ') === 'tar cf - -C /files --' && /^[a-z0-9.-]+$/.test(commands[6]!);
@@ -248,47 +210,6 @@ export async function checkRemote(context: {
   };
   try {
     environment.KUBERNETES_AXI_READ_ONLY = 'false';
-    await check('B5.1-terminal:stream redaction preserves credential filters across every chunk boundary', async () => {
-      const { Redactor } = await import(join(dirname(cli), '../dist/redaction.js')) as typeof import('../src/redaction.js');
-      const redactor = new Redactor();
-      redactor.register('synthetic-selected-token');
-      const input = Buffer.from(credentialOutput + 'synthetic-selected-token\nλ prompt> ');
-      for (let split = 1; split < input.length; split++) {
-        const stream = redactor.terminalStream();
-        const output = Buffer.concat([stream.push(input.subarray(0, split)), stream.push(input.subarray(split)), stream.end()]);
-        assert.equal(output.toString(), credentialSafe + '[REDACTED]\nλ prompt> ');
-      }
-      const stream = redactor.terminalStream();
-      assert.equal(stream.push(Buffer.from('λ prompt> ')).toString(), 'λ prompt> ');
-      const bytes = [...Buffer.from(credentialOutput)].map(byte => stream.push(Buffer.from([byte])));
-      assert.equal(Buffer.concat([...bytes, stream.end()]).toString(), credentialSafe);
-    });
-    for (const name of ['token', 'password', 'Password', 'clientSecret', 'privateKey', 'client-key-data', 'authorization']) {
-      await check(`B5.1-terminal:${name} credential state survives newlines`, async () => {
-        const { Redactor } = await import(join(dirname(cli), '../dist/redaction.js')) as typeof import('../src/redaction.js');
-        const stream = new Redactor().terminalStream();
-        assert.equal(stream.push(Buffer.from(`${name}:\n`)).toString(), `${name}:\n`);
-        assert.equal(stream.push(Buffer.from(' ')).toString(), ' ');
-        assert.equal(stream.push(Buffer.from('canary')).toString(), '');
-        assert.equal(stream.push(Buffer.from('-multiline\nready> ')).toString(), '[REDACTED]\nready> ');
-        assert.equal(stream.end().toString(), '');
-      });
-      await check(`B5.1-terminal:${name} prompt arrives before its protected value`, async () => {
-        const { Redactor } = await import(join(dirname(cli), '../dist/redaction.js')) as typeof import('../src/redaction.js');
-        const stream = new Redactor().terminalStream();
-        const prefix = [...Buffer.from(`${name}: `)].map(byte => stream.push(Buffer.from([byte])));
-        assert.equal(Buffer.concat(prefix).toString(), `${name}: `);
-        assert.equal(stream.push(Buffer.from('canary')).toString(), '');
-        assert.equal(stream.push(Buffer.from('-prompt')).toString(), '');
-        assert.equal(stream.end().toString(), '[REDACTED]');
-        const immediate = new Redactor().terminalStream();
-        assert.equal(immediate.push(Buffer.from(`${name}: `)).toString(), `${name}: `);
-        assert.equal(immediate.end().toString(), '');
-        const following = new Redactor().terminalStream();
-        assert.equal(following.push(Buffer.from(`ready\n${name}: `)).toString(), `ready\n${name}: `);
-        assert.equal(following.push(Buffer.from('canary\n')).toString(), '[REDACTED]\n');
-      });
-    }
     for (const [operation, container] of [['exec', 'selected-container'], ['attach', 'selected-container'], ['attach', 'terminal-container']] as const) await check(`AC-BYTES-001:session ${operation} ${container} stdin stdout stderr and EOF preserve arbitrary bytes`, async () => {
       const bytes = Buffer.from([0, 255, 254, 128, 10, 13, 0]);
       const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
@@ -305,7 +226,7 @@ export async function checkRemote(context: {
       const prepared = once(events, 'prepared', { signal: AbortSignal.timeout(15000) });
       const closed = once(child, 'close');
       forwarded.length = 0;
-      child.send({ action: 'start', args: ['prepare', '--', operation, 'selected', '-n', 'synthetic-remote', '-c', container, '-i', ...(operation === 'exec' ? ['--', 'echo-bytes'] : [])], stdinBase64: bytes.toString('base64'), timeoutMs: 10000 });
+      child.send({ action: 'start', args: ['prepare', '--', operation, 'selected', '-n', 'synthetic-remote', '-c', container, '-i', ...(operation === 'exec' ? ['--', 'echo-bytes'] : ['--quiet'])], stdinBase64: bytes.toString('base64'), timeoutMs: 10000 });
       const [{ preview }] = await prepared as [{ preview: { digest: string } }];
       const exited = once(events, 'exit', { signal: AbortSignal.timeout(15000) });
       child.send({ action: 'confirm', digest: preview.digest });
@@ -351,90 +272,6 @@ export async function checkRemote(context: {
       requests.length = 0;
       const result = await run(['prepare', '--', 'exec', 'selected', '-it', '--', 'true']);
       assert.match(result.stdout, /LOCAL_TERMINAL_REQUIRED/); assert.equal(requests.length, 0);
-    });
-    for (const operation of ['exec', 'attach'] as const) await check(`B5.1-terminal:${operation} input resize and remote exit use a real Linux PTY`, async () => {
-      const prepared = terminal([cli, 'prepare', '--', operation, 'selected', '-n', 'synthetic-remote', '-it', ...(operation === 'exec' ? ['--', 'terminal-probe'] : ['-c', 'terminal-container'])], environment);
-      assert.equal(await prepared.closed, 0, prepared.output());
-      const saved = decode(prepared.output()) as { request: string };
-      const preview = await run(['preview', saved.request]);
-      assert.equal(preview.code, 0, preview.stdout);
-      const { digest } = decode(preview.stdout) as { digest: string };
-      const piped = await run(['confirm', saved.request, '--digest', digest]);
-      assert.match(piped.stdout, /LOCAL_TERMINAL_REQUIRED/);
-      const session = terminal([cli, 'confirm', saved.request, '--digest', digest], environment);
-      try {
-        await session.waitFor('terminal-ready');
-        await session.waitFor('"Width":80');
-        session.send({ resize: [40, 120] });
-        await session.waitFor('"Width":120');
-        session.send({ input: Buffer.from('secret\n').toString('hex') });
-        await session.waitFor('[REDACTED]');
-        await session.waitFor('ready> ');
-        assert(!session.output().includes('canary-'), session.output());
-        assert(!session.output().includes('eyJhbGci'), session.output());
-        session.send({ input: Buffer.from('exit\n').toString('hex') });
-        assert.equal(await session.closed, 0, session.output());
-        assert.match(session.output(), /input:657869740a/);
-        assert(!session.output().includes(environment.SYNTHETIC_TOKEN!));
-      } finally { session.close(); }
-      assert.deepEqual(readdirSync(environment.TMPDIR!), []);
-    });
-    for (const ending of ['remote failure', 'SIGTERM'] as const) await check(`B5.1-terminal:${ending} preserves exit and removes the session`, async () => {
-      const prepared = terminal([cli, 'prepare', '--', 'exec', 'selected', '-n', 'synthetic-remote', '-it', '--', 'terminal-probe'], environment);
-      assert.equal(await prepared.closed, 0, prepared.output());
-      const { request } = decode(prepared.output()) as { request: string };
-      const preview = await run(['preview', request]);
-      const { digest } = decode(preview.stdout) as { digest: string };
-      const session = terminal([cli, 'confirm', request, '--digest', digest], environment);
-      try {
-        await session.waitFor('terminal-ready');
-        session.send(ending === 'SIGTERM' ? { signal: 'SIGTERM' } : { input: Buffer.from('exitfail\n').toString('hex') });
-        assert.equal(await session.closed, ending === 'SIGTERM' ? 143 : 17, session.output());
-        assert.deepEqual(readdirSync(environment.TMPDIR!), []);
-      } finally { session.close(); }
-    });
-    for (const [name, args, expected] of [
-      ['watch', ['get', 'pods', '-n', 'synthetic-remote', '--watch'], 'selected'],
-      ['follow', ['logs', 'selected', '-n', 'synthetic-remote', '--follow'], 'synthetic followed log line'],
-    ] as const) await check(`B5.1-terminal:${name} streams until cancellation`, async () => {
-      const session = terminal([cli, 'native', '--', ...args], environment);
-      try {
-        await session.waitFor(expected);
-        if (name === 'follow') {
-          await session.waitFor('https://synthetic.invalid/?[REDACTED]&x=1');
-          assert(!session.output().includes('canary-'), session.output());
-          assert(!session.output().includes('eyJhbGci'), session.output());
-        }
-        session.send({ signal: 'SIGTERM' });
-        assert.equal(await session.closed, 143, session.output());
-        assert.deepEqual(readdirSync(environment.TMPDIR!), []);
-      } finally { session.close(); }
-    });
-    await check('B5.1-terminal:confirmed port forwarding reaches the selected port and cancellation removes its listener', async () => {
-      const boundary = await portForwardBoundary(directory);
-      portForwardFixture(boundary.upgrade);
-      const prepared = terminal([cli, 'prepare', '--', 'port-forward', 'selected', '8080', '-n', 'synthetic-remote'], environment);
-      assert.equal(await prepared.closed, 0, prepared.output());
-      const { request } = decode(prepared.output()) as { request: string };
-      const preview = await run(['preview', request]);
-      const { digest } = decode(preview.stdout) as { digest: string };
-      const session = terminal([cli, 'confirm', request, '--digest', digest], environment);
-      try {
-        await session.waitFor('Forwarding from 127.0.0.1:');
-        const port = Number(/Forwarding from 127\.0\.0\.1:(\d+)/.exec(session.output())![1]);
-        const client = createConnection({ host: '127.0.0.1', port });
-        const bytes: Buffer[] = [];
-        client.on('data', (chunk: Buffer) => bytes.push(chunk));
-        const closed = once(client, 'close', { signal: AbortSignal.timeout(15000) });
-        client.end('hello');
-        await closed;
-        assert.equal(Buffer.concat(bytes).toString(), '8080:hello:drained');
-        session.send({ signal: 'SIGTERM' });
-        assert.equal(await session.closed, 143, session.output());
-        const denied = createConnection({ host: '127.0.0.1', port });
-        await assert.rejects(once(denied, 'connect'), { code: 'ECONNREFUSED' });
-        assert.deepEqual(readdirSync(environment.TMPDIR!), []);
-      } finally { session.close(); portForwardFixture(undefined); await boundary.close(); }
     });
     for (const spdy of [false, true]) await check(`AC-017-TRANSPORT:${spdy ? 'SPDY fallback' : 'WebSocket GET'}`, async () => {
       fallback = spdy; forwarded.length = 0;

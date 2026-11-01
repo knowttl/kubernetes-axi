@@ -95,7 +95,7 @@ def run(args):
     pack = args.pack.resolve()
     if args.command == "task" and args.target in ("B5.1", "B5.2"):
         if platform.system() != "Linux":
-            raise PendingPrerequisite("B5 currently records Linux terminal and package evidence; native Windows remains pending.")
+            raise PendingPrerequisite("B5 currently records Linux capability-refusal, bounded execution and package evidence; native Windows remains pending.")
         return subprocess.run([
             "node", str(ROOT / "scripts/verify-b5.ts"), args.target, str(pack),
             *([str(args.artium.resolve())] if args.artium else []),

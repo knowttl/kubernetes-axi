@@ -43,7 +43,7 @@ run(process.execPath, [join(root, 'test/b2.ts'), '--pack', pack, '--task', task,
   ...(task === 'B5.1' ? ['--case', '^B5\\.1|^AC-017:TTY|^AC-029|^CC-009'] : []),
   ...(artium ? ['--artium', artium] : [])], artium ?? root);
 
-const pending = ['Native Windows terminal and live commissioning remain pending.'];
+const pending = ['Managed interactive execution and standalone streams are disabled in 0.1.x; see issues #34 and #35.', 'Native Windows and live commissioning remain pending.'];
 let host: object = { outcome: 'skipped', reason: 'Real Artium journeys are opt-in; supply --artium <frozen-checkout>.' };
 if (artium) {
   const revision = spawnSync('git', ['-C', artium, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
@@ -66,6 +66,7 @@ if (artium) {
 } else console.error('Artium journeys skipped: supply --artium <frozen-checkout> to opt in.');
 console.log(JSON.stringify({ task, outcome: exitCode === 0 ? 'pass' : exitCode === 2 ? 'pending' : 'failure',
   nativeOS: process.platform, mode: 'offline', networkIsolation: 'Linux network namespace; loopback only',
+  executionBoundary: '0.1.x refuses managed interactive exec/attach/debug and standalone watch/follow/port-forward before effects; bounded execution and existing hosted bounded sessions remain supported',
   localPrograms: '0.1.x refuses editors, plugins and external helpers before effects; submit external output through prepare/preview/confirm',
   artium: host, checks, pending }, null, 2));
 process.exitCode = exitCode;

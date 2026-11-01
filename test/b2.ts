@@ -485,6 +485,38 @@ try {
     finally { writeFileSync(path, saved); }
   });
   }
+  for (const [args, code] of [
+    [['prepare', '--', 'exec', 'selected', '-i', '--', 'sh'], 1],
+    [['prepare', '--', 'exec', 'selected', '-t', '--', 'sh'], 1],
+    [['prepare', '--', 'attach', 'selected', '-it'], 1],
+    [['prepare', '--', 'attach', 'selected', '-i'], 1],
+    [['prepare', '--', 'debug', 'selected', '--image=synthetic:debug'], 1],
+    [['prepare', '--', 'debug', 'selected', '--image=synthetic:debug', '--attach=false', '-it'], 1],
+    [['port-forward', 'selected', '8080'], 1],
+    [['prepare', '--', 'port-forward', 'selected', '8080'], 1],
+    [['native', '--', 'get', 'pods', '--watch'], 2],
+    [['native', '--', 'get', 'pods', '--watch-only'], 2],
+    [['native', '--', 'get', 'pods', '--output-watch-events'], 2],
+    [['native', '--', 'logs', 'selected', '--follow'], 2],
+    [['logs', 'selected', '--follow'], 2],
+  ] as const) for (const mode of ['pipe', 'PTY']) await check(`B5.1-refusal:${mode} ${args.join(' ')}`, async () => {
+    const files = readdirSync(directory);
+    const command = [process.execPath, cli, ...args].map(arg => `'${arg.replaceAll("'", "'\\''")}'`).join(' ');
+    const binary = mode === 'PTY' ? 'script' : process.execPath;
+    const argv = mode === 'PTY' ? ['--quiet', '--return', '--command', `exec ${command}`, '/dev/null'] : [cli, ...args];
+    await assert.rejects(execute(binary, argv, { env: { ...environment, KUBERNETES_AXI_READ_ONLY: 'false' }, timeout: 20000 }), (error: unknown) => {
+      const result = error as { code: number; stdout: string; stderr: string };
+      assert.equal(result.code, code, result.stdout + result.stderr);
+      assert.match(result.stdout, /refused before effects/);
+      assert(!result.stdout.includes(environment.SYNTHETIC_TOKEN!));
+      assert(!result.stderr.includes(environment.SYNTHETIC_TOKEN!));
+      return true;
+    });
+    assert.equal(requests.length, 0);
+    assert.deepEqual(readdirSync(directory), files);
+    assert.deepEqual(readdirSync(temporary), []);
+    assert(!existsSync(programMarker));
+  });
   await check('B5.1-native:client version and completion work without credentials', async () => {
     const token = environment.SYNTHETIC_TOKEN;
     environment.SYNTHETIC_TOKEN = '';

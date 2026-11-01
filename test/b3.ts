@@ -5,7 +5,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { decode } from '@toon-format/toon';
-import { terminal } from './terminal.ts';
 
 // Synthetic Kubernetes boundary, shared with B2's real TLS server and installed package.
 // Schemas and preconditions follow the Kubernetes API concepts and v1.32 API reference.
@@ -239,27 +238,6 @@ export async function checkMutations({ run, check, environment, directory, reque
     assert.deepEqual(effects.map(effect => ({ method: effect.method, path: effect.path })), [{ method, path }]);
     assert.equal(objects.get(target)!.spec[method === 'POST' ? 'containers' : 'ephemeralContainers'].at(-1).name, 'debugger');
     assert.deepEqual(objects.get(`${core}/pods/pod-b`), decoy);
-  });
-  await test('B5.1-debug:reviewed ephemeral container accepts a separately confirmed terminal attachment', async () => {
-    const prepared = terminal([cli, 'prepare', '--', 'debug', 'pod-a', '-n', ns, '--image=synthetic:debug', '--container=debugger', '--attach=false', '-it', '--', 'sh'], environment);
-    assert.equal(await prepared.closed, 0, prepared.output());
-    const saved = decode(prepared.output()) as { request: string };
-    assert.equal(effects.length, 0);
-    const preview = await output(['preview', saved.request]);
-    await confirm({ ...saved, digest: preview.digest });
-    assert.equal(objects.get(`${core}/pods/pod-a`)!.spec.ephemeralContainers.at(-1).tty, true);
-    const attachment = terminal([cli, 'prepare', '--', 'attach', 'pod-a', '-n', ns, '-c', 'debugger', '-it'], environment);
-    assert.equal(await attachment.closed, 0, attachment.output());
-    const request = decode(attachment.output()) as { request: string };
-    const reviewed = await output(['preview', request.request]);
-    const session = terminal([cli, 'confirm', request.request, '--digest', reviewed.digest], environment);
-    try {
-      await session.waitFor('terminal-ready');
-      session.send({ input: Buffer.from('exit\n').toString('hex') });
-      assert.equal(await session.closed, 0, session.output());
-      assert.deepEqual(effects.map(effect => effect.method), ['PATCH']);
-      assert.deepEqual(readdirSync(environment.TMPDIR!), []);
-    } finally { session.close(); }
   });
   await test('AC-029-raw-read-and-mutation', async () => {
     const read = await run(['native', '--', 'get', `--raw=${core}/configmaps/selected`]);

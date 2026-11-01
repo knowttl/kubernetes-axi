@@ -11,9 +11,11 @@ Confirmation is one-shot and refuses stale or changed targets.
 Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.
 Use server-dry-run -- <mutation> for explicit API validation without persistence.
 Exec/attach and named debug mutations require preparation and confirmation.
-Linux exec/attach -it confirmations require a real local terminal and util-linux script at /usr/bin/script; input, resize and cancellation use a PTY with redacted output.
-Native get --watch and logs --follow stream in a local Linux terminal.
-Hosted TTY and native Windows terminal support remain pending.
+In 0.1.x, managed interactive exec/attach/debug and standalone watch, follow and port-forward requests are refused before effects.
+Credentials come only from existing config/profile and secure credential references; tool-managed sessions never read credential secrets from terminal prompts.
+Bounded noninteractive execution and existing hosted bounded sessions remain supported.
+Streaming redaction and interactive execution redesigns are tracked at https://github.com/knowttl/kubernetes-axi/issues/34 and https://github.com/knowttl/kubernetes-axi/issues/35.
+Native Windows support remains pending.
 Token issuance additionally requires KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true, a duration of at most one hour, and --credential-fd <inherited-private-pipe> before confirm.
 Issued tokens are delivered once and never retained.
 Hosted workspace transfer, byte sessions, followed logs, watches and multi-port forwarding use caller-owned authenticated Artium sessions.

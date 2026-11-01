@@ -131,7 +131,7 @@ Generated grammar:
   Public native Secret reads are refused; `get secrets` returns metadata only.
 - Runtime digest checks refuse stale generated metadata before credential resolution or API calls.
 
-### Linux terminal sessions
+### Bounded execution and the 0.1.x capability boundary
 
 Non-interactive `exec` and `attach` use the prepare, preview and confirm workflow.
 Preparation freezes the named pod, container and exact command argument sequence without opening a stream.
@@ -139,28 +139,23 @@ Confirmation checks the selected identity, cluster and pod snapshot before invok
 The private gateway supports WebSocket GET and kubectl's SPDY fallback, preserves separate stdout/stderr, and returns the remote exit code.
 Both operations require `KUBERNETES_AXI_READ_ONLY=false`.
 
-Linux standalone `exec` and `attach` support `-it` when stdin and stdout are real terminals.
-Preparation freezes the terminal settings without opening a stream; confirmation requires a terminal too.
-The pinned kubectl runs under a PTY using util-linux `script` at `/usr/bin/script`, with input, resize, redacted output and cancellation cleanup.
-No terminal transcript is recorded.
-Remote exit codes are preserved; local SIGINT, SIGTERM and SIGHUP cancellations return 130, 143 and 129.
-Piped interactive invocations and hosted TTY requests return `LOCAL_TERMINAL_REQUIRED` before opening a stream.
-Native Windows terminal support remains pending.
+In 0.1.x, managed interactive `exec`, `attach` and debugging are refused before effects, even in a real terminal.
+Standalone watches, followed logs and port forwarding are also refused before effects.
+Credentials come only from existing config/profile and secure credential references.
+Tool-managed sessions never read credential secrets from terminal prompts.
+Canonical streaming redaction is tracked in [issue #34](https://github.com/knowttl/kubernetes-axi/issues/34), and redesigned interactive exec/attach in [issue #35](https://github.com/knowttl/kubernetes-axi/issues/35).
+Existing hosted bounded/noninteractive byte sessions, watches, followed logs and forwarding retain their established behavior.
 
-`debug --attach=false` prepares its named create or ephemeral-container patch through the mutation policy.
-For interactive debugging, confirm that change first, then prepare and confirm `attach -it -c <debugger>` to the named pod from a local Linux terminal.
+`debug --attach=false` still prepares named create or ephemeral-container patches through the mutation policy.
 Helper-backed mutations and execution remain refused.
+Native Windows support remains pending.
 
-Native `get --watch` and `logs --follow` stream until cancellation in a local Linux terminal.
-Local port forwarding uses the same preparation and confirmation sequence, binds loopback, and selects one to eight numeric remote ports with automatically assigned local ports.
 Native completion, options, plugin discovery and `version --client=true` run offline without credentials.
 
 ```sh
-kubernetes-axi --profile <name> prepare -- exec <pod> -n <namespace> -it -- sh
+kubernetes-axi --profile <name> prepare -- exec <pod> -n <namespace> -- true
 kubernetes-axi --profile <name> preview <request-key>
 kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>
-kubernetes-axi --profile <name> native -- get pods -n <namespace> --watch
-kubernetes-axi --profile <name> prepare -- port-forward <pod> 8080 -n <namespace>
 kubernetes-axi native -- completion bash
 ```
 
@@ -261,7 +256,7 @@ Insecure or redirected paths fail before credentials are read.
 - Native Windows execution, ACL conformance and helper channels are pending; Linux is the verified platform.
 - Live cluster commissioning and complete command coverage are pending.
 - In 0.1.x, local editors, plugins and external render/diff helpers are refused before effects; use externally produced manifests or patches with the preview and confirmation workflow.
-- Standalone mode has no direct file transfer or generic proxy listener; interactive exec/attach requires a local Linux terminal.
+- Standalone mode has no direct file transfer, generic proxy listener, managed interactive exec/attach/debug, watch/follow streams or port forwarding.
 - Hosted transfers, byte sessions and port forwarding are verified only against a frozen local Artium fixture, not a released Artium.
 - Terminal-bound helpers and legacy auth-provider plugins fail explicitly.
 - Supported server minors are listed in [kubectl-pins.json](kubectl-pins.json).
@@ -281,6 +276,7 @@ python3 scripts/verify.py task B5.2 --mode offline --pack evidence
 ```
 
 The verifier uses Python 3; use `python3` on Linux hosts without a `python` alias.
+B5.1 verifies the reduced 0.1.x boundary: interactive and standalone-streaming requests refuse before effects, while bounded execution and offline native client/config commands remain available.
 B5.2 runs cumulative package journeys, strict types and generated-contract checks.
 Artium hosted proof is optional for the 0.1.x package gate.
 Add `--artium <frozen-checkout>` to either B5 command for optional hosted journeys and the selected frozen Artium aggregate.
