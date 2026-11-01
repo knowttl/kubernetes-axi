@@ -6,6 +6,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs
 import { createServer, get, request } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
+import { mock } from 'node:test';
 import type { TLSSocket } from 'node:tls';
 import { pathToFileURL } from 'node:url';
 import { decode } from '@toon-format/toon';
@@ -121,6 +122,8 @@ try {
   db.exec("DELETE FROM role_tools; INSERT INTO role_tools VALUES ('synthetic-role', 'kubernetes-axi'); UPDATE tools SET enabled = 1 WHERE name = 'kubernetes-axi'");
   store.replaceCredential('kubernetes-axi', { origin, auth: 'token', namespace,
     certificateAuthority: ca, token: selected }, 0, 'synthetic-development-user', Date.now());
+  // Periodic health probes share the runner; custody assertions concern only each explicit call.
+  mock.timers.enable({ apis: ['setInterval'] });
   const url = await app.listen({ host: '127.0.0.1', port: 0 });
   const developer = join(root, 'developer');
   await mkdir(join(developer, '.kube'), { recursive: true, mode: 0o700 });
@@ -227,7 +230,7 @@ try {
         assert.notEqual(result.code, 0);
         assert.match(result.stdout, /FLAG_BLOCKED/);
         assert.deepEqual(requests, []);
-        assert.deepEqual(await readdir(calls), []);
+        assert.deepEqual(await readdir(calls), [], `${override.join(' ')} must leave no private call directory`);
       });
     }
   }
@@ -278,6 +281,7 @@ try {
     policyScope: 'Pod-read-only host admission denies native scale, execution and token issuance before forwarding, independently of package write enablement and broader synthetic upstream permissions', packageSha256: digest }));
 } finally {
   await app.close();
+  mock.timers.reset();
   api.closeAllConnections();
   await new Promise<void>(resolveClose => api.close(() => resolveClose()));
   db.close();
