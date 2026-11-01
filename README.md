@@ -97,7 +97,7 @@ B1.3 and `gate 1` report native Windows as pending and exit 2 after the Linux jo
 The `release` entry point also remains pending because later stages are unimplemented.
 Pending never counts as pass.
 The B1.1 verifier reports missing npm or OpenSSL as pending and exits 2; integrity mismatches remain failures and exit 1.
-The B2 task commands run the combined B2 harness and private-file checks, which require Linux network namespaces, npm, OpenSSL, prlimit and cached npm dependencies; missing prerequisites fail the run.
+The B2 and B3 task commands run the combined B2/B3 harness and private-file checks, which require Linux network namespaces, npm, OpenSSL, prlimit and cached npm dependencies; missing prerequisites fail the run.
 The private-file checks interrupt a real write with a file-size limit and verify preservation of the prior file and removal of the temporary file.
 Injected Windows ACL checks exercise the platform branch; native Windows commissioning remains pending.
 
@@ -141,7 +141,8 @@ The generator uses a temporary Go adapter to inspect the upstream types; no thir
 Unknown flags are rejected before effects.
 Compact reads reject unsupported flags explicitly; the native route preserves repeated flags and the native `--` boundary.
 AXI `--profile` selects an identity before `native --`; upstream `--profile` after that delimiter is classified as profiling output and refused.
-Credential, server, impersonation, TLS-bypass, raw-route, filesystem and streaming options are refused by this milestone's policy.
+Credential, server, impersonation, TLS-bypass, raw-route and streaming options are refused by this milestone's policy.
+Filesystem options are refused except for mutation inputs described below and explicit native configuration operations.
 Cluster mutations use the protected prepare, preview and confirm workflow below.
 Arbitrary execution, transfers and connections remain staged for their later capabilities.
 Explicit local native configuration edits are available through the native identity adapter described below.
@@ -219,6 +220,8 @@ kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>
 
 `prepare` runs the pinned kubectl through a guarded channel and captures its exact operation sequence.
 It sends bounded reads, freezes UIDs and resourceVersions, and never forwards mutations.
+Preparation accepts manifest input through `--filename` and patch input through `--patch-file`; server dry run accepts the same inputs.
+Guarded API sessions allow at most 256 upstream requests within 15 seconds, retain at most 4 MiB of API response bytes, and accept at most 1 MiB per mutation payload.
 The snapshot, signing key and outcome record live in a private `requests/<request-key>` directory beside the selected standard configuration file.
 Native identities use that same protected state directory and bind to their selected context and original identity.
 The child receives a temporary loopback capability instead of the upstream credentials.
@@ -229,6 +232,8 @@ Secret payloads, last-applied configuration and configured credential values are
 
 `confirm` requires the exact digest and original identity, rechecks every captured target, and atomically claims the request before writing.
 Object changes use UID/resourceVersion preconditions.
+Preparation refuses deletion, replacement and eviction of absent targets with `PREVIEW_TARGET_ABSENT`.
+Apply to an absent target is captured as a create-only POST, so an object created after preview cannot be overwritten.
 A repeated confirmation never replays a mutation.
 Conflicts and transport failures return failure with the method, route, upstream status where available and a reconciliation read of the target identity/version.
 Partial operations remain failures and preserve results for completed requests; prepare a fresh request to act on the remaining targets.
