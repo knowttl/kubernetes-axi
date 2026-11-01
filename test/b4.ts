@@ -63,10 +63,9 @@ export async function checkB4Host(context: {
   const grants = (operations: string[]): void => {
     db.prepare('UPDATE tools SET native_settings=? WHERE name=?').run(JSON.stringify({ sessions: { grants: { [user]: operations, 'synthetic-other': operations } } }), 'kubernetes-axi');
   };
-  let credentialRevision = 1;
   const replaceCredential = (): void => {
-    store.replaceCredential('kubernetes-axi', { ...profiles.selected, token: environment.SYNTHETIC_TOKEN }, credentialRevision, user, Date.now());
-    credentialRevision++;
+    const { revision } = store.findCredential('kubernetes-axi');
+    store.replaceCredential('kubernetes-axi', { ...profiles.selected, token: environment.SYNTHETIC_TOKEN }, revision, user, Date.now());
   };
   const revoke = async (): Promise<void> => {
     const response = await call('/v1/auth/reauth', 'POST', { password: 'CANARY-local-password' });
@@ -185,21 +184,23 @@ export async function checkB4Host(context: {
       assert.equal((await call(`${prefix}/${session.id}`, 'DELETE')).status, 200);
       await clean();
     });
-    for (const reason of ['operation revocation', 'credential revision change'] as const) await check(`B4.2-host:${reason} denies retained output and cancels execution`, async () => {
+    for (const [reason, status] of [['operation revocation', 403], ['credential revision change', 409]] as const) await check(`B4.2-host:${reason} denies retained output and cancels execution`, async () => {
       grants(['exec']);
       const session = await start('hold');
-      const connected = once(server, 'upgrade', { signal: AbortSignal.timeout(10000) });
-      await call(`${prefix}/${session.id}/confirm`, 'POST', { digest: session.preview.digest });
-      const [, peer] = await connected as [IncomingMessage, Duplex];
-      const signal = AbortSignal.timeout(10000);
-      const stopped = Promise.race([once(peer, 'end', { signal }), once(peer, 'close', { signal })]);
-      if (reason === 'operation revocation') await revoke();
-      else replaceCredential();
-      const denied = await call(`${prefix}/${session.id}/output`);
-      assert.equal(denied.status, 403);
-      assert.equal((await call(`${prefix}/${session.id}`)).status, 403);
-      await stopped;
-      await clean();
+      try {
+        const connected = once(server, 'upgrade', { signal: AbortSignal.timeout(10000) });
+        await call(`${prefix}/${session.id}/confirm`, 'POST', { digest: session.preview.digest });
+        const [, peer] = await connected as [IncomingMessage, Duplex];
+        const signal = AbortSignal.timeout(10000);
+        const stopped = Promise.race([once(peer, 'end', { signal }), once(peer, 'close', { signal })]);
+        if (reason === 'operation revocation') await revoke();
+        else replaceCredential();
+        const denied = await call(`${prefix}/${session.id}/output`);
+        assert.equal(denied.status, status);
+        assert.equal((await call(`${prefix}/${session.id}`)).status, status);
+        await stopped;
+        await clean();
+      } finally { await call(`${prefix}/${session.id}`, 'DELETE'); }
     });
     await check('B4.2-host:expiry terminates the child and marks the incomplete channels', async () => {
       grants(['exec']);
@@ -357,45 +358,47 @@ export async function checkB4Host(context: {
         }));
       } finally { controller.abort(); await tunnel.close(); }
     });
-    for (const reason of ['revocation', 'credential revision change', 'expiry'] as const) await check(`B4.3-host:${reason} removes loopback listeners and denies reconnection`, async () => {
+    for (const [reason, status] of [['revocation', 403], ['credential revision change', 409], ['expiry', 200]] as const) await check(`B4.3-host:${reason} removes loopback listeners and denies reconnection`, async () => {
       grants(['port-forward']);
       const session = await forward(reason === 'expiry' ? { lifetimeSeconds: 3 } : {});
-      const { openKubernetesTunnel } = await host('dist/src/cli/kubernetes-tunnel.js');
-      const controller = new AbortController();
-      const options = { serverUrl: url, session: session.id, ports: [8080, 9090], accessToken: headers.authorization!.slice('Bearer '.length), signal: controller.signal };
-      const tunnel = await openKubernetesTunnel(options);
-      const clients: Duplex[] = [];
-      const disconnected: Promise<unknown>[] = [];
       try {
-        for (const port of tunnel.ports) {
-          const socket = createConnection({ host: '127.0.0.1', port: port.local });
-          clients.push(socket);
-          const signal = AbortSignal.timeout(15000);
-          disconnected.push(once(socket, 'close', { signal }));
-          const [bytes] = await once(socket, 'data', { signal }) as [Buffer];
-          assert(bytes.length > 0);
-        }
-        if (reason === 'revocation') await revoke();
-        else if (reason === 'credential revision change') replaceCredential();
-        else {
-          const response = await call(`${prefix}/${session.id}?wait=true`);
-          assert.equal(response.status, 200, await response.clone().text());
-          assert.equal((await response.json() as { state: string }).state, 'expired');
-        }
-        if (reason !== 'expiry') {
-          assert.equal((await call(`${prefix}/${session.id}/output`)).status, 403);
-          assert.equal((await call(`${prefix}/${session.id}`)).status, 403);
-        }
-        await tunnel.closed;
-        await session.stopped;
-        await Promise.all(disconnected);
-        await assert.rejects(openKubernetesTunnel(options));
-        for (const port of tunnel.ports) await assert.rejects(new Promise<void>((resolve, reject) => {
-          const socket = createConnection({ host: '127.0.0.1', port: port.local });
-          socket.once('error', reject); socket.once('connect', () => { socket.destroy(); resolve(); });
-        }));
-        await clean();
-      } finally { for (const socket of clients) socket.destroy(); controller.abort(); await tunnel.close(); }
+        const { openKubernetesTunnel } = await host('dist/src/cli/kubernetes-tunnel.js');
+        const controller = new AbortController();
+        const options = { serverUrl: url, session: session.id, ports: [8080, 9090], accessToken: headers.authorization!.slice('Bearer '.length), signal: controller.signal };
+        const tunnel = await openKubernetesTunnel(options);
+        const clients: Duplex[] = [];
+        const disconnected: Promise<unknown>[] = [];
+        try {
+          for (const port of tunnel.ports) {
+            const socket = createConnection({ host: '127.0.0.1', port: port.local });
+            clients.push(socket);
+            const signal = AbortSignal.timeout(15000);
+            disconnected.push(once(socket, 'close', { signal }));
+            const [bytes] = await once(socket, 'data', { signal }) as [Buffer];
+            assert(bytes.length > 0);
+          }
+          if (reason === 'revocation') await revoke();
+          else if (reason === 'credential revision change') replaceCredential();
+          else {
+            const response = await call(`${prefix}/${session.id}?wait=true`);
+            assert.equal(response.status, status, await response.clone().text());
+            assert.equal((await response.json() as { state: string }).state, 'expired');
+          }
+          if (reason !== 'expiry') {
+            assert.equal((await call(`${prefix}/${session.id}/output`)).status, status);
+            assert.equal((await call(`${prefix}/${session.id}`)).status, status);
+          }
+          await tunnel.closed;
+          await session.stopped;
+          await Promise.all(disconnected);
+          await assert.rejects(openKubernetesTunnel(options));
+          for (const port of tunnel.ports) await assert.rejects(new Promise<void>((resolve, reject) => {
+            const socket = createConnection({ host: '127.0.0.1', port: port.local });
+            socket.once('error', reject); socket.once('connect', () => { socket.destroy(); resolve(); });
+          }));
+          await clean();
+        } finally { for (const socket of clients) socket.destroy(); controller.abort(); await tunnel.close(); }
+      } finally { await call(`${prefix}/${session.id}`, 'DELETE'); }
     });
     await check('B4.3-host:ungranted raw and nested proxy effects are denied before forwarding', async () => {
       let upstream = 0;
