@@ -242,6 +242,7 @@ python3 scripts/verify.py task B1.1 --mode offline --pack evidence
 - For offline builds, place the official kubectl binaries named in [kubectl-pins.json](kubectl-pins.json) in `vendor/` before installing; the build checks their SHA256 digests and otherwise downloads only from the pinned official URL.
 - `npm test` runs inside a loopback-only Linux namespace, so outbound network access is denied.
   Only the external Kubernetes API is faked, through a verified TLS loopback server with synthetic identities.
+- The package-contract check packs and installs the package offline in a temporary directory, checks the published file contract and admission module exports, and runs the installed bin with `--help` and `--version`.
 - Hosted journeys need a frozen Artium checkout: `python3 scripts/verify.py task B1.2 --mode offline --pack evidence --artium <frozen-checkout>`.
   Without `--artium` they are skipped with an explicit reason.
 - B3.4 also needs a verified `strace` in `KUBERNETES_AXI_TEST_WRITE_OBSERVER` with its digest in `KUBERNETES_AXI_TEST_WRITE_OBSERVER_SHA256`; without it the task reports pending and exits 2.
