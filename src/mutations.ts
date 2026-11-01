@@ -15,6 +15,7 @@ import type { Redactor } from './redaction.js';
 import { privateDirectory, readPrivate, writePrivate } from './private-files.js';
 import { remoteSession } from './remote-session.js';
 import { routeEffect } from './route-policy.js';
+import { executionLimit } from './metadata-pin.js';
 
 const execute = promisify(execFile);
 interface Metadata { name?: string; namespace?: string; uid?: string; resourceVersion?: string; continue?: string }
@@ -22,7 +23,7 @@ interface Document { apiVersion?: string; kind?: string; metadata?: Metadata; it
 interface Reply { status: number; body: Document }
 interface Snapshot { path: string; objects: { name: string; namespace: string; uid: string; version: string }[]; absent: boolean; collection: boolean }
 interface Change { operation: string; method: string; path: string; target: string; contentType: string; body: unknown; wire: string; inputBase64: string }
-interface Execution { argv: string[]; target: string; route: string; query: string; stdinSha256?: string }
+interface Execution { argv: string[]; target: string; route: string; query: string; stdinSha256?: string; terminal?: boolean }
 interface Plan { version: 1; key: string; binding: string; command: string; namespace: string; awaitDeletion: boolean; snapshots: Snapshot[]; changes: Change[]; display: object; execution?: Execution }
 interface Saved { plan: Plan; digest: string; state: 'prepared' | 'running' | 'complete' | 'failed'; results: Result[] }
 interface Result { operation: string; method: string; path: string; outcome: string; upstreamStatus?: number; observed?: Snapshot['objects'] }
@@ -51,6 +52,7 @@ async function savedRequest(invocation: Invocation): Promise<{ saved: Saved; dir
   const value = JSON.parse(await readPrivate(join(directory, 'request.json'), true)) as Saved;
   const digest = mac(signingKey, value.plan);
   if (value.plan.version !== 1 || value.plan.key !== workflow.key || typeof value.digest !== 'string' || value.digest.length !== digest.length || !timingSafeEqual(Buffer.from(value.digest), Buffer.from(digest))) throw new Failure('PREVIEW_INVALID', 'The saved request was changed; prepare a new request.');
+  if (value.plan.execution?.terminal) throw new Failure('LOCAL_TERMINAL_REQUIRED', executionLimit);
   return { saved: value, directory, signingKey };
 }
 

@@ -25,7 +25,7 @@ let portForward: ((incoming: IncomingMessage, socket: Duplex, head: Buffer) => v
 export function portForwardFixture(handler: typeof portForward): void { portForward = handler; }
 let copyVariant: 'safe' | 'traversal' | 'link' | 'oversize' = 'safe';
 export function copyFixtureVariant(variant: typeof copyVariant): void { copyVariant = variant; }
-const pod = () => ({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'selected', namespace: 'synthetic-remote', uid: 'remote-pod', resourceVersion: revision }, spec: { containers: [{ name: 'first', image: 'synthetic' }, { name: 'selected-container', image: 'synthetic' }] }, status: { phase: 'Running' } });
+const pod = () => ({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'selected', namespace: 'synthetic-remote', uid: 'remote-pod', resourceVersion: revision }, spec: { containers: [{ name: 'first', image: 'synthetic' }, { name: 'selected-container', image: 'synthetic' }, { name: 'terminal-container', image: 'synthetic', stdin: true, tty: true }] }, status: { phase: 'Running' } });
 
 export function remoteFixture(incoming: IncomingMessage, response: ServerResponse): boolean {
   const path = new URL(incoming.url!, 'https://local').pathname;
@@ -169,7 +169,7 @@ export async function checkRemote(context: {
         socket.once('close', () => child.kill('SIGTERM'));
       };
       if (tarDownload) { tar(Buffer.alloc(0), ['cf', '-', '-C', container, '--', commands[6]!]); return; }
-      if (commands[0] === 'echo-bytes' || tarUpload) {
+      if (commands[0] === 'echo-bytes' || tarUpload || url.pathname.endsWith('/attach') && url.searchParams.get('stdin') === 'true') {
         let pending = head;
         const input: Buffer[] = [];
         const receive = (chunk: Buffer): void => {
@@ -210,7 +210,7 @@ export async function checkRemote(context: {
   };
   try {
     environment.KUBERNETES_AXI_READ_ONLY = 'false';
-    await check('AC-BYTES-001:session stdin stdout stderr and EOF preserve arbitrary bytes', async () => {
+    for (const [operation, container] of [['exec', 'selected-container'], ['attach', 'selected-container'], ['attach', 'terminal-container']] as const) await check(`AC-BYTES-001:session ${operation} ${container} stdin stdout stderr and EOF preserve arbitrary bytes`, async () => {
       const bytes = Buffer.from([0, 255, 254, 128, 10, 13, 0]);
       const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       const events = new EventEmitter();
@@ -225,7 +225,8 @@ export async function checkRemote(context: {
       });
       const prepared = once(events, 'prepared', { signal: AbortSignal.timeout(15000) });
       const closed = once(child, 'close');
-      child.send({ action: 'start', args: ['prepare', '--', 'exec', 'selected', '-n', 'synthetic-remote', '-i', '--', 'echo-bytes'], stdinBase64: bytes.toString('base64'), timeoutMs: 10000 });
+      forwarded.length = 0;
+      child.send({ action: 'start', args: ['prepare', '--', operation, 'selected', '-n', 'synthetic-remote', '-c', container, '-i', ...(operation === 'exec' ? ['--', 'echo-bytes'] : ['--quiet'])], stdinBase64: bytes.toString('base64'), timeoutMs: 10000 });
       const [{ preview }] = await prepared as [{ preview: { digest: string } }];
       const exited = once(events, 'exit', { signal: AbortSignal.timeout(15000) });
       child.send({ action: 'confirm', digest: preview.digest });
@@ -235,6 +236,10 @@ export async function checkRemote(context: {
       assert.deepEqual(Buffer.concat(output.stdout), bytes);
       assert.deepEqual(Buffer.concat(output.stderr), Buffer.from([255, 0, 128]));
       assert.deepEqual(result, { event: 'exit', exitCode: 0, stdoutEOF: true, stderrEOF: true });
+      const query = new URLSearchParams(forwarded.at(-1)!.query);
+      assert.equal(query.get('tty'), null);
+      assert.equal(query.get('stderr'), 'true');
+      assert.equal(query.get('stdin'), 'true');
     });
     await check('AC-SESSION-002:private host disconnect removes the running credential files', async () => {
       const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });

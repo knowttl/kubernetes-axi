@@ -3,7 +3,7 @@ import { identity, configPath, profiles, validateEnvironment } from './credentia
 import { Failure } from './errors.js';
 import { readCluster } from './runner.js';
 import type { NativeOutput } from './runner.js';
-import { parse, commandHelp } from './grammar.js';
+import { parse, commandHelp, clientOnly } from './grammar.js';
 import { guidance } from './metadata-pin.js';
 import { Redactor } from './redaction.js';
 import { preview } from './mutations.js';
@@ -44,7 +44,7 @@ export async function main(args: string[]): Promise<void> {
       output({ profiles: Object.keys(config.profiles).map(name => ({ name, default: name === config.defaultProfile })) });
       return;
     }
-    const selected = invocation.nativeConfig ? undefined : await identity(invocation.config, invocation.profile, ['auth status', 'doctor'].includes(invocation.command.path));
+    const selected = invocation.nativeConfig || clientOnly(invocation) ? undefined : await identity(invocation.config, invocation.profile, ['auth status', 'doctor'].includes(invocation.command.path));
     redactor.register(selected?.secret, selected?.profile.clientCertificate);
     if (selected && ['auth status', 'doctor'].includes(invocation.command.path)) {
       output({ source: selected.source, origin: selected.profile.origin, auth: selected.profile.auth, secretSource: selected.profile.token ?? selected.profile.privateKey ?? { env: `KUBERNETES_AXI_${selected.profile.auth === 'token' ? 'TOKEN' : 'PRIVATE_KEY'}` }, permissions: 'verified' });

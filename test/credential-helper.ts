@@ -15,6 +15,8 @@ if (process.env.SYNTHETIC_HELPER_FAILURE) {
   if (!info.spec.cluster || info.spec.interactive !== false) throw new Error('Expected native cluster information and noninteractive execution');
   console.log(JSON.stringify({ apiVersion: info.apiVersion, kind: 'ExecCredential', status: {
     token: count === 0 ? tokens[0] : tokens[1],
-    expirationTimestamp: '2000-01-01T00:00:00Z',
+    // Renew once, then cache the renewed identity instead of spawning a helper
+    // for every discovery request and exhausting the bounded read deadline.
+    expirationTimestamp: count === 0 ? '2000-01-01T00:00:00Z' : '2100-01-01T00:00:00Z',
   } }));
 }

@@ -1,6 +1,6 @@
 {
   "approvedLimits": {
-    "diff": "Not yet supported (staged): diff requires the later file and external-helper execution capability. Native exit meanings remain 0 for no differences, 1 for differences, and greater than 1 for failure."
+    "diff": "In 0.1.x, run diff and its external helpers outside the CLI. Submit resulting changes through prepare, preview and confirm."
   },
   "flagOverrides": {
     "debug": { "profile": "clusterWrite" },

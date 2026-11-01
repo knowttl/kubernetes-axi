@@ -13,12 +13,20 @@ Preparation reads exact targets; local preview makes no API calls.
 Confirmation is one-shot and refuses stale or changed targets.
 Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.
 Use server-dry-run -- <mutation> for explicit API validation without persistence.
-Bounded non-interactive exec/attach and named debug mutations require preparation and confirmation.
+Exec/attach and named debug mutations require preparation and confirmation.
+In 0.1.x, managed interactive exec/attach/debug and standalone watch, follow and port-forward requests are refused before effects.
+Credentials come only from existing config/profile and secure credential references; tool-managed sessions never read credential secrets from terminal prompts.
+Bounded noninteractive execution and existing hosted bounded sessions remain supported.
+Streaming redaction and interactive execution redesigns are tracked at https://github.com/knowttl/kubernetes-axi/issues/34 and https://github.com/knowttl/kubernetes-axi/issues/35.
+Native Windows support remains pending.
 Token issuance additionally requires KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true, a duration of at most one hour, and --credential-fd <inherited-private-pipe> before confirm.
 Issued tokens are delivered once and never retained.
 Hosted workspace transfer, byte sessions, followed logs, watches and multi-port forwarding use caller-owned authenticated Artium sessions.
-Local rendering/plugin helpers, generic proxy listeners, credential overrides and interactive sessions remain refused.
-Not yet supported (staged): diff requires the later file and external-helper execution capability.
-Native exit meanings remain 0 for no differences, 1 for differences, and greater than 1 for failure.
+In 0.1.x, run editors, plugins and external render/diff helpers outside the CLI, then prepare the resulting manifest or patch and confirm its preview.
+Their execution inside the CLI is refused before effects.
+Generic proxy listeners and credential overrides remain refused.
+Native completion, options, plugin list and version --client=true work without credentials.
+In 0.1.x, run diff and its external helpers outside the CLI.
+Submit resulting changes through prepare, preview and confirm.
 Run npx -y @knowttl/kubernetes-axi --help for available commands and npx -y @knowttl/kubernetes-axi native -- <command> --help for generated upstream flags.
 

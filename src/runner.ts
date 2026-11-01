@@ -15,6 +15,7 @@ import { nativeConfig, inspectNative } from './native.js';
 import type { Redactor } from './redaction.js';
 import { mutationSession } from './mutations.js';
 import { byteProcess, type ByteExecution } from './byte-process.js';
+import { clientOnly } from './grammar.js';
 
 const execute = promisify(execFile);
 const pins = JSON.parse(await readFile(new URL('../kubectl-pins.json', import.meta.url), 'utf8')) as {
@@ -103,10 +104,13 @@ export async function readCluster(identity: Identity | undefined, invocation: In
   };
   const config = join(directory, 'config.json');
   const cancellation = new AbortController();
-  const cancel = (): void => cancellation.abort();
+  const cancel = (): void => cancellation.abort('SIGINT');
+  const terminate = (): void => cancellation.abort('SIGTERM');
+  const hangup = (): void => cancellation.abort('SIGHUP');
   byteExecution?.signal.addEventListener('abort', cancel, { once: true });
-  process.once('SIGTERM', cancel);
+  process.once('SIGTERM', terminate);
   process.once('SIGINT', cancel);
+  process.once('SIGHUP', hangup);
   const deadline = Date.now() + 15_000;
   let requests = 0;
   let retainedBytes = 0;
@@ -169,6 +173,10 @@ export async function readCluster(identity: Identity | undefined, invocation: In
   let source = identity?.source ?? '';
   let binding = JSON.stringify(identity);
   try {
+    if (clientOnly(invocation)) {
+      if (invocation.command.path === 'plugin list') env.PATH = process.env.PATH;
+      return await invoke(invocation.argv, 'native') as NativeOutput;
+    }
     if (invocation.nativeConfig && invocation.native && invocation.command.path.startsWith('config ')) {
       if (invocation.nativeConfig === 'ambient') throw new Failure('CONFIG_INVALID', 'Native config operations require one explicitly selected source file.');
       if (invocation.command.effect === 'localWrite' && /^(true|1)$/i.test(process.env.KUBERNETES_AXI_READ_ONLY ?? '')) throw new Failure('READ_ONLY', 'Native config writes are disabled by read-only policy.');
@@ -283,8 +291,9 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     cancellation.abort();
     await close();
     await rm(directory, { recursive: true, force: true });
-    process.removeListener('SIGTERM', cancel);
+    process.removeListener('SIGTERM', terminate);
     process.removeListener('SIGINT', cancel);
+    process.removeListener('SIGHUP', hangup);
     byteExecution?.signal.removeEventListener('abort', cancel);
   }
 }

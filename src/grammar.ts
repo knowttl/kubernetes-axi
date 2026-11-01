@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { Failure } from './errors.js';
-import { metadataSha256 } from './metadata-pin.js';
+import { metadataSha256, executionLimit } from './metadata-pin.js';
 import { routeEffect } from './route-policy.js';
 
 export interface Flag { name: string; short: string; type: string; default: string; noOpt: string; usage: string; effect: string }
@@ -133,6 +133,7 @@ export function parse(args: string[], session = false): Invocation {
   if (command.path === '' && positionals.length) throw new Failure('USAGE', 'Unknown command. Run kubernetes-axi --help.', 2);
   if (!command.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The command has no reviewed effect classification.');
   if (!help) {
+    if (['exec', 'attach', 'debug'].includes(command.path) && (flags.get('tty') === 'true' || !session && flags.get('stdin') === 'true') || command.path === 'debug' && flags.get('attach') !== 'false' || !session && command.path === 'port-forward') throw new Failure('LOCAL_TERMINAL_REQUIRED', executionLimit);
     const guarded = ['exec', 'attach', 'create token', ...(session ? ['port-forward'] : [])].includes(command.path);
     if (flags.has('raw')) {
       const effect = routeEffect(command.path === 'get' ? 'GET' : command.path === 'delete' ? 'DELETE' : command.path === 'replace' ? 'PUT' : 'POST', flags.get('raw')!);
@@ -140,18 +141,16 @@ export function parse(args: string[], session = false): Invocation {
       if (!['read', 'clusterWrite'].includes(effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `Raw ${effect} routes require the corresponding explicit guarded command.`);
       if (/\/secrets(?:\/|\?|$)/.test(flags.get('raw')!)) throw new Failure('CREDENTIAL_OUTPUT_REFUSED', 'Use compact get secrets for metadata.');
     }
-    if (command.path === 'debug' && flags.get('attach') !== 'false') throw new Failure('LOCAL_TERMINAL_REQUIRED', 'Use debug --attach=false to prepare its create or patch effects; interactive debug requires a local terminal.');
     if (guarded) {
       requireWrites();
       if (!workflow || workflow.kind !== 'prepare') throw new Failure('PREVIEW_REQUIRED', 'Use prepare -- <command>, preview <request-key>, then confirm <request-key> --digest <digest>.');
       if (command.path === 'create token' && !/^(true|1)$/i.test(process.env.KUBERNETES_AXI_ACQUIRE_CREDENTIAL ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Token issuance requires KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true and a private delivery pipe on confirmation.');
-      if (flags.get('tty') === 'true' || !session && flags.get('stdin') === 'true') throw new Failure('LOCAL_TERMINAL_REQUIRED', 'Interactive execution requires a local terminal; this route supports bounded non-interactive execution only.');
     }
     if (native && ['get', 'describe'].includes(command.path) && positionals.some((value, index) => (index === 0 || value.includes('/')) && value.split(',').some(resource => /^secrets?(?:$|[/.])/i.test(resource)))) throw new Failure('CREDENTIAL_OUTPUT_REFUSED', 'Use compact get secrets for metadata; public native Secret output is unavailable.');
     if (own.nativeConfig && ['config set', 'config set-credentials', 'config view'].includes(command.path)) throw new Failure('USAGE', 'Raw native credential inspection and credential argv writes are unavailable.', 2);
     if (command.compatibilityLimit) throw new Failure('NOT_YET_SUPPORTED_STAGED', command.compatibilityLimit);
     for (const flag of command.flags) {
-      if (!session && flag.effect === 'stream' && (flags.get(flag.name) ?? flag.default) !== 'false') throw new Failure('USAGE', `--${flag.name} must be false under the isolated bounded-read policy.`, 2);
+      if (!session && flag.effect === 'stream' && (flags.get(flag.name) ?? flag.default) !== 'false') throw new Failure('USAGE', `--${flag.name} must be false in standalone mode. ${executionLimit}`, 2);
     }
     for (const name of flags.keys()) {
       const flag = command.flags.find(flag => flag.name === name)!;
@@ -168,7 +167,7 @@ export function parse(args: string[], session = false): Invocation {
       if (!workflow) throw new Failure('PREVIEW_REQUIRED', 'Use prepare -- <command>, preview <request-key>, then confirm <request-key> --digest <digest>.');
       if (flags.has('dry-run')) throw new Failure('USAGE', 'Use server-dry-run -- <command> for server validation, or prepare -- <command> for a frozen request.', 2);
     } else if (workflow && !guarded) throw new Failure('USAGE', 'Preparation and server dry run require a resource mutation command.', 2);
-    if (!(own.nativeConfig && native && command.path.startsWith('config ')) && !guarded && !['read', 'local', 'clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `The ${command.effect} capability is not available in this milestone.`);
+    if (!(own.nativeConfig && native && command.path.startsWith('config ')) && !(native && command.path === 'plugin list') && !guarded && !['read', 'local', 'clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `The ${command.effect} capability is not available in this milestone.`);
     if (['wait', 'events'].includes(command.path)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bounded event reads use get events; wait and streaming sessions require a later capability.');
     if (!native) {
       const allowed: Record<string, string[]> = {
@@ -198,10 +197,15 @@ export function requireWrites(): void {
   if (!/^(false|0)$/i.test(process.env.KUBERNETES_AXI_READ_ONLY ?? '')) throw new Failure('READ_ONLY', 'Writes require KUBERNETES_AXI_READ_ONLY=false and explicit confirmation.');
 }
 
+export function clientOnly(invocation: Invocation): boolean {
+  return invocation.native && (['completion', 'options', 'plugin list'].includes(invocation.command.path) || invocation.command.path === 'version' && invocation.flags.get('client') === 'true');
+}
+
 export function commandHelp(command: Command): object {
   return {
     command: command.path || 'kubernetes-axi', description: command.description,
     usage: command.use, effect: command.effect,
+    ...(['exec', 'attach', 'debug', 'get', 'logs', 'port-forward'].includes(command.path) ? { capabilityBoundary: executionLimit } : {}),
     ...(command.operations ? { operations: command.operations } : {}),
     ...(command.compatibilityLimit ? { compatibilityLimit: command.compatibilityLimit } : {}),
     flags: command.flags.map(flag => ({ name: `--${flag.name}`, short: flag.short ? `-${flag.short}` : '', type: flag.type, default: flag.default })),
