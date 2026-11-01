@@ -25,7 +25,7 @@ interface Snapshot { path: string; objects: { name: string; namespace: string; u
 interface Change { operation: string; method: string; path: string; target: string; contentType: string; body: unknown; wire: string; inputBase64: string }
 interface Execution { argv: string[]; target: string; route: string; query: string; stdinSha256?: string; terminal?: boolean }
 interface Plan { version: 1; key: string; binding: string; command: string; namespace: string; awaitDeletion: boolean; snapshots: Snapshot[]; changes: Change[]; display: object; execution?: Execution }
-interface Saved { plan: Plan; digest: string; state: 'prepared' | 'running' | 'complete' | 'failed'; results: Result[] }
+interface Saved { plan: Plan; digest: string; state: 'prepared' | 'running' | 'complete' | 'failed'; results: Result[]; exitCode?: number }
 interface Result { operation: string; method: string; path: string; outcome: string; upstreamStatus?: number; observed?: Snapshot['objects'] }
 interface Config {
   'current-context'?: string;
@@ -48,8 +48,16 @@ async function savedRequest(invocation: Invocation): Promise<{ saved: Saved; dir
   const workflow = invocation.workflow;
   if (!workflow || !('key' in workflow)) throw new Failure('USAGE', 'Select a prepared request.', 2);
   const directory = join(root(invocation.config), workflow.key);
-  const signingKey = await readPrivate(join(directory, 'key'), true);
-  const value = JSON.parse(await readPrivate(join(directory, 'request.json'), true)) as Saved;
+  let signingKey: string;
+  let value: Saved;
+  try {
+    signingKey = await readPrivate(join(directory, 'key'), true);
+    value = JSON.parse(await readPrivate(join(directory, 'request.json'), true)) as Saved;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Failure('REQUEST_NOT_FOUND', 'No saved request exists for this key; prepare a new request.');
+    if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw new Failure('REQUEST_UNREADABLE', 'The saved request cannot be read; check its protected directory and file permissions.');
+    throw error;
+  }
   const digest = mac(signingKey, value.plan);
   if (value.plan.version !== 1 || value.plan.key !== workflow.key || typeof value.digest !== 'string' || value.digest.length !== digest.length || !timingSafeEqual(Buffer.from(value.digest), Buffer.from(digest))) throw new Failure('PREVIEW_INVALID', 'The saved request was changed; prepare a new request.');
   if (value.plan.execution?.terminal) throw new Failure('LOCAL_TERMINAL_REQUIRED', executionLimit);
@@ -102,7 +110,7 @@ function operation(method: string, path: string): string {
 }
 
 export async function mutationSession(configFile: string, invocation: Invocation, namespace: string, redactor: Redactor, signal: AbortSignal, compatibleVersion: (value: unknown) => void, nativeBinding?: string): Promise<{
-  config: object; argv?: string[]; rawPath?: string; prepared?: boolean; finish: (success?: boolean) => Promise<object>; close: () => Promise<void>;
+  config: object; argv?: string[]; rawPath?: string; prepared?: boolean; finish: (success?: boolean, exitCode?: number, stderr?: string) => Promise<object>; close: () => Promise<void>;
 }> {
   const config = JSON.parse(await readFile(configFile, 'utf8')) as Config;
   const cluster = config.clusters[0]!.cluster;
@@ -175,7 +183,8 @@ export async function mutationSession(configFile: string, invocation: Invocation
         }
       } catch { throw new Failure('PRIVATE_DELIVERY_REQUIRED', 'The credential sink must be an inherited private pipe distinct from public output.'); }
     }
-    const report = (): object => ({ request: saved.plan.key, state: saved.state, complete: saved.state === 'complete', results: saved.results });
+    const replayed = saved.state !== 'prepared';
+    const report = (): object => ({ request: saved.plan.key, state: saved.state, complete: saved.state === 'complete', results: saved.results, ...(replayed ? { replayed: true } : {}), ...(saved.exitCode === undefined ? {} : { exitCode: saved.exitCode }) });
     const persist = async (): Promise<void> => {
       await writePrivate(join(directory, 'request.json'), JSON.stringify(saved));
       await writePrivate(join(directory, 'outcome.json'), JSON.stringify(redactor.value(report())));
@@ -184,7 +193,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
     if (saved.state === 'complete') return { config, finish: async () => report(), close: async () => {} };
     if (saved.state !== 'prepared') {
       for (const change of saved.plan.changes) saved.results.push({ operation: change.operation, method: 'GET', path: change.target, outcome: 'reconciled_without_retry', observed: await reconcile(change) });
-      process.exitCode = 1;
+      process.exitCode = saved.exitCode ?? 1;
       return { config, finish: async () => report(), close: async () => {} };
     }
     compatibleVersion((await upstream('GET', '/version')).body);
@@ -203,8 +212,9 @@ export async function mutationSession(configFile: string, invocation: Invocation
     if (saved.plan.execution) {
       const execution = saved.plan.execution;
       const session = await remoteSession(config, saved.plan.namespace, execution.target, execution.route, execution.query, signal);
-      return { ...session, argv: execution.argv, finish: async (success = true) => {
+      return { ...session, argv: execution.argv, finish: async (success = true, exitCode) => {
         saved.state = success ? 'complete' : 'failed';
+        if (exitCode !== undefined) saved.exitCode = exitCode;
         saved.results.push({ operation: 'OP-017', method: 'CONNECT', path: execution.route, outcome: success ? 'complete' : 'failed' });
         await persist();
         return report();
@@ -280,6 +290,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
     if (!/^[a-z0-9][a-z0-9.-]*$/.test(name)) throw new Failure('USAGE', 'Bounded execution requires one named pod.', 2);
     const target = `/api/v1/namespaces/${namespace}/pods/${name}`;
     const pod = await upstream('GET', target);
+    if (pod.status === 404) throw new Failure('RESOURCE_NOT_FOUND', 'The selected pod was not found.', 1, { upstreamStatus: 404 });
     await remember(target, pod);
     if (invocation.command.path === 'port-forward') {
       const ports = invocation.positionals.slice(1).map(port => {
@@ -329,6 +340,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
         let reply: Reply;
         if (method === 'GET') {
           reply = await upstream(method, path);
+          if (reply.status === 404 && invocation.command.path === 'scale') failure = new Failure('RESOURCE_NOT_FOUND', 'The selected scale target was not found.', 1, { upstreamStatus: 404 });
           if (workflow?.kind === 'prepare' && reply.status < 300 && (reply.body.metadata?.uid || reply.body.items)) await remember(path, reply);
         } else if (invocation.command.effect === 'authorization') {
           if (method !== 'POST' || !/^\/apis\/(?:authorization.k8s.io\/v1\/(?:selfsubjectaccessreviews|selfsubjectrulesreviews)|authentication.k8s.io\/v1(?:beta1|alpha1)?\/selfsubjectreviews)$/.test(path.split('?')[0]!)) throw new Failure('EFFECT_UNCLASSIFIED', 'Only the selected non-persistent review API is allowed.');
@@ -416,14 +428,19 @@ export async function mutationSession(configFile: string, invocation: Invocation
     ...(execution ? { prepared: true } : {}),
     ...(invocation.flags.has('raw') ? { rawPath: `/${capability}${invocation.flags.get('raw')}` } : {}),
     config: { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'selected', cluster: { server: `http://127.0.0.1:${address.port}/${capability}` } }], users: [{ name: 'selected', user: {} }], contexts: [{ name: config['current-context'] ?? 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': config['current-context'] ?? 'selected' },
-    finish: async (success = true) => {
+    finish: async (success = true, _exitCode, stderr = '') => {
       if (failure) throw failure;
       if (invocation.command.effect === 'authorization') {
         const denied = reviews.find(review => review.upstreamStatus >= 300);
         if (denied) throw new Failure(denied.upstreamStatus === 401 ? 'AUTH_REQUIRED' : 'ACCESS_DENIED', 'The selected identity cannot create this review.', 1, { upstreamStatus: denied.upstreamStatus });
         return { reviews, complete: reviews.every(review => !(review.status as Record<string, unknown> | undefined)?.incomplete) };
       }
-      if (!success) throw new Failure('UPSTREAM_FAILED', 'The command failed; no prepared request was issued. Check its arguments, targets and permissions.');
+      if (!success) {
+        if (/^(?:error: )?Error from server \(NotFound\):/mi.test(stderr)) throw new Failure('RESOURCE_NOT_FOUND', 'The selected resource was not found; no prepared request was issued.', 1, { upstreamStatus: 404 });
+        if (/^error: the path .+ does not exist/m.test(stderr)) throw new Failure('INPUT_NOT_FOUND', 'The input manifest file does not exist; select an existing file.');
+        if (/^error: resource\(s\) were provided, but no name was specified/m.test(stderr)) throw new Failure('USAGE', 'Specify resource names, a selector or --all for deletion.', 2);
+        throw new Failure('UPSTREAM_FAILED', 'The command failed; no prepared request was issued. Check its arguments, targets and permissions.');
+      }
       if (workflow?.kind !== 'prepare') return { dryRun: 'server', operations: changes.map(change => ({ operation: 'OP-027', method: change.method, path: change.path })), persisted: false };
       if (changes.filter(change => change.method === 'DELETE').length > 1 && !/^(true|1)$/i.test(process.env.KUBERNETES_AXI_COLLECTION_DELETE ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.');
       const key = randomUUID();

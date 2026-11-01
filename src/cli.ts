@@ -7,10 +7,12 @@ import { parse, commandHelp, clientOnly } from './grammar.js';
 import { guidance } from './metadata-pin.js';
 import { Redactor } from './redaction.js';
 import { preview } from './mutations.js';
+import { nativeConfigPaths } from './native.js';
+import { readFile } from 'node:fs/promises';
 
 const help = {
   description: guidance,
-  commands: ['version', 'get <resource> [name]', 'api-versions', 'api-resources', 'logs <pod>', 'top node', 'top pod', 'describe <resource> <name>', 'explain <resource>', 'auth status', 'profile list', 'config path', 'doctor', 'prepare -- <mutation>', 'preview <request-key>', 'confirm <request-key> --digest <digest>', 'server-dry-run -- <mutation>', 'native -- <arguments>'],
+  commands: ['version', 'get <resource> [name]', 'api-versions', 'api-resources', 'logs <pod>', 'top node', 'top pod', 'describe <resource> <name>', 'explain <resource>', 'rollout history <resource>', 'rollout status <resource> --watch=false', 'auth status', 'profile list', 'config path', 'doctor', 'prepare -- <mutation>', 'preview <request-key>', 'confirm <request-key> --digest <digest>', 'server-dry-run -- <mutation>', 'native -- <arguments>'],
   flags: ['--config <absolute-path>', '--profile <name>', '--namespace <name>', '--native-config <absolute-path|ambient>', '--trust-exec', '--credential-fd <inherited-private-pipe> (confirm only)', '--help'],
   examples: ['kubernetes-axi version --profile <name>', 'kubernetes-axi get pods --profile <name> --namespace <namespace>'],
 };
@@ -38,7 +40,8 @@ export async function main(args: string[]): Promise<void> {
     json = invocation.flags.get('output') === 'json';
     if (invocation.help) { output(commandHelp(invocation.command)); return; }
     if (invocation.workflow?.kind === 'preview') { output(await preview(invocation)); return; }
-    if (invocation.command.path === 'config path') { output({ path: configPath(invocation.config) }); return; }
+    if (invocation.versionProbe) { process.stdout.write(`${JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version}\n`); return; }
+    if (invocation.command.path === 'config path') { output(invocation.nativeConfig ? { paths: await nativeConfigPaths(invocation.nativeConfig) } : { path: configPath(invocation.config) }); return; }
     if (invocation.command.path === 'profile list') {
       const config = await profiles(invocation.config);
       output({ profiles: Object.keys(config.profiles).map(name => ({ name, default: name === config.defaultProfile })) });
@@ -47,7 +50,7 @@ export async function main(args: string[]): Promise<void> {
     const selected = invocation.nativeConfig || clientOnly(invocation) ? undefined : await identity(invocation.config, invocation.profile, ['auth status', 'doctor'].includes(invocation.command.path));
     redactor.register(selected?.secret, selected?.profile.clientCertificate);
     if (selected && ['auth status', 'doctor'].includes(invocation.command.path)) {
-      output({ source: selected.source, origin: selected.profile.origin, auth: selected.profile.auth, secretSource: selected.profile.token ?? selected.profile.privateKey ?? { env: `KUBERNETES_AXI_${selected.profile.auth === 'token' ? 'TOKEN' : 'PRIVATE_KEY'}` }, permissions: 'verified' });
+      output({ source: selected.source, origin: selected.profile.origin, auth: selected.profile.auth, secretSource: selected.profile.token ?? selected.profile.privateKey ?? { env: `KUBERNETES_AXI_${selected.profile.auth === 'token' ? 'TOKEN' : 'PRIVATE_KEY'}` }, permissions: 'verified', connectivity: 'not checked' });
       return;
     }
     output(await readCluster(selected, invocation, redactor));
