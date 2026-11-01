@@ -478,7 +478,7 @@ try {
     finally { writeFileSync(path, saved); }
   });
   }
-  await checkMutations({ run, check, environment, directory, requests });
+  await checkMutations({ run, check, environment, directory, requests, cli });
   await checkRemote({ server, run, check, environment, directory, requests, cli });
   if (selectedArtium) await checkB4Host({ artium: selectedArtium, directory, cli, environment, server, check, run });
   await check('R6-native-prefix-all-operation-paths', async () => local(async () => {

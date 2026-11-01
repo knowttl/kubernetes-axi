@@ -86,7 +86,7 @@ const run = async (invocation: Invocation): Promise<void> => {
     await send({ event: 'artifacts', files: manifest });
   }
   if (!native.native) await send({ event: 'result', value: redactor.value(output) });
-  await send({ event: 'exit', exitCode: native.exitCode ?? 0, stdoutEOF: true, stderrEOF: true });
+  await send({ event: 'exit', exitCode: native.exitCode ?? Number(process.exitCode ?? 0), stdoutEOF: true, stderrEOF: true });
   process.disconnect();
 };
 process.on('disconnect', () => { controller.abort(); });

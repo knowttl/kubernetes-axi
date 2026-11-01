@@ -7,6 +7,7 @@ import type { IncomingMessage } from 'node:http';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createConnection } from 'node:net';
+import type { Duplex } from 'node:stream';
 import { portForwardBoundary } from './port-forward.ts';
 import { copyFixtureVariant, portForwardFixture } from './remote.ts';
 
@@ -62,6 +63,11 @@ export async function checkB4Host(context: {
   const grants = (operations: string[]): void => {
     db.prepare('UPDATE tools SET native_settings=? WHERE name=?').run(JSON.stringify({ sessions: { grants: { [user]: operations, 'synthetic-other': operations } } }), 'kubernetes-axi');
   };
+  let credentialRevision = 1;
+  const replaceCredential = (): void => {
+    store.replaceCredential('kubernetes-axi', { ...profiles.selected, token: environment.SYNTHETIC_TOKEN }, credentialRevision, user, Date.now());
+    credentialRevision++;
+  };
   const revoke = async (): Promise<void> => {
     const response = await call('/v1/auth/reauth', 'POST', { password: 'CANARY-local-password' });
     assert.equal(response.status, 200, await response.clone().text());
@@ -95,10 +101,14 @@ export async function checkB4Host(context: {
     return workspace.id;
   };
   let boundary: Awaited<ReturnType<typeof portForwardBoundary>> | undefined;
-  const forward = async (): Promise<{ id: string }> => {
+  const forward = async (limits: { lifetimeSeconds?: number } = {}): Promise<{ id: string; stopped: Promise<unknown> }> => {
     boundary ??= await portForwardBoundary(directory);
-    portForwardFixture(boundary.upgrade);
-    const response = await call(prefix, 'POST', { kind: 'port-forward', argv: ['prepare', '--', 'port-forward', 'selected', '0:8080', '0:9090', '-n', 'synthetic-remote'] });
+    let upstream: Duplex | undefined;
+    portForwardFixture((incoming, socket, head) => {
+      if (incoming.method === 'POST') upstream = socket;
+      boundary!.upgrade(incoming, socket, head);
+    });
+    const response = await call(prefix, 'POST', { kind: 'port-forward', argv: ['prepare', '--', 'port-forward', 'selected', '0:8080', '0:9090', '-n', 'synthetic-remote'], limits });
     assert.equal(response.status, 200, await response.clone().text());
     const session = await response.json() as { id: string; preview: { digest: string } };
     assert.equal((await call(`${prefix}/${session.id}/confirm`, 'POST', { digest: session.preview.digest })).status, 200);
@@ -106,7 +116,9 @@ export async function checkB4Host(context: {
     assert.equal(readiness.status, 200, await readiness.clone().text());
     const ready = await readiness.json() as { state: string; tunnelReady: boolean };
     assert.equal(ready.state, 'running'); assert.equal(ready.tunnelReady, true);
-    return session;
+    assert(upstream);
+    const signal = AbortSignal.timeout(15000);
+    return { ...session, stopped: Promise.race([once(upstream, 'end', { signal }), once(upstream, 'close', { signal })]) };
   };
   try {
     await check('B4.2-host:ungranted exec is denied before dispatch', async () => {
@@ -173,15 +185,20 @@ export async function checkB4Host(context: {
       assert.equal((await call(`${prefix}/${session.id}`, 'DELETE')).status, 200);
       await clean();
     });
-    await check('B4.2-host:operation revocation denies retained output and cancels execution', async () => {
+    for (const reason of ['operation revocation', 'credential revision change'] as const) await check(`B4.2-host:${reason} denies retained output and cancels execution`, async () => {
+      grants(['exec']);
       const session = await start('hold');
       const connected = once(server, 'upgrade', { signal: AbortSignal.timeout(10000) });
       await call(`${prefix}/${session.id}/confirm`, 'POST', { digest: session.preview.digest });
-      await connected;
-      await revoke();
-      await clean();
+      const [, peer] = await connected as [IncomingMessage, Duplex];
+      const signal = AbortSignal.timeout(10000);
+      const stopped = Promise.race([once(peer, 'end', { signal }), once(peer, 'close', { signal })]);
+      if (reason === 'operation revocation') await revoke();
+      else replaceCredential();
       const denied = await call(`${prefix}/${session.id}/output`);
       assert.equal(denied.status, 403);
+      assert.equal((await call(`${prefix}/${session.id}`)).status, 403);
+      await stopped;
       await clean();
     });
     await check('B4.2-host:expiry terminates the child and marks the incomplete channels', async () => {
@@ -333,26 +350,52 @@ export async function checkB4Host(context: {
         const cancelled = await call(`${prefix}/${session.id}`, 'DELETE');
         assert.equal(cancelled.status, 200);
         await tunnel.closed;
+        await session.stopped;
         await assert.rejects(new Promise<void>((resolve, reject) => {
           const socket = createConnection({ host: '127.0.0.1', port: tunnel.ports[0].local });
           socket.once('error', reject); socket.once('connect', () => { socket.destroy(); resolve(); });
         }));
       } finally { controller.abort(); await tunnel.close(); }
     });
-    await check('B4.3-host:revocation removes loopback listeners and denies reconnection', async () => {
+    for (const reason of ['revocation', 'credential revision change', 'expiry'] as const) await check(`B4.3-host:${reason} removes loopback listeners and denies reconnection`, async () => {
       grants(['port-forward']);
-      const session = await forward();
+      const session = await forward(reason === 'expiry' ? { lifetimeSeconds: 3 } : {});
       const { openKubernetesTunnel } = await host('dist/src/cli/kubernetes-tunnel.js');
       const controller = new AbortController();
-      const options = { serverUrl: url, session: session.id, ports: [8080], accessToken: headers.authorization!.slice('Bearer '.length), signal: controller.signal };
+      const options = { serverUrl: url, session: session.id, ports: [8080, 9090], accessToken: headers.authorization!.slice('Bearer '.length), signal: controller.signal };
       const tunnel = await openKubernetesTunnel(options);
+      const clients: Duplex[] = [];
+      const disconnected: Promise<unknown>[] = [];
       try {
-        await revoke();
+        for (const port of tunnel.ports) {
+          const socket = createConnection({ host: '127.0.0.1', port: port.local });
+          clients.push(socket);
+          const signal = AbortSignal.timeout(15000);
+          disconnected.push(once(socket, 'close', { signal }));
+          const [bytes] = await once(socket, 'data', { signal }) as [Buffer];
+          assert(bytes.length > 0);
+        }
+        if (reason === 'revocation') await revoke();
+        else if (reason === 'credential revision change') replaceCredential();
+        else {
+          const response = await call(`${prefix}/${session.id}?wait=true`);
+          assert.equal(response.status, 200, await response.clone().text());
+          assert.equal((await response.json() as { state: string }).state, 'expired');
+        }
+        if (reason !== 'expiry') {
+          assert.equal((await call(`${prefix}/${session.id}/output`)).status, 403);
+          assert.equal((await call(`${prefix}/${session.id}`)).status, 403);
+        }
         await tunnel.closed;
+        await session.stopped;
+        await Promise.all(disconnected);
         await assert.rejects(openKubernetesTunnel(options));
-        assert.equal((await call(`${prefix}/${session.id}/output`)).status, 403);
+        for (const port of tunnel.ports) await assert.rejects(new Promise<void>((resolve, reject) => {
+          const socket = createConnection({ host: '127.0.0.1', port: port.local });
+          socket.once('error', reject); socket.once('connect', () => { socket.destroy(); resolve(); });
+        }));
         await clean();
-      } finally { controller.abort(); await tunnel.close(); }
+      } finally { for (const socket of clients) socket.destroy(); controller.abort(); await tunnel.close(); }
     });
     await check('B4.3-host:ungranted raw and nested proxy effects are denied before forwarding', async () => {
       let upstream = 0;

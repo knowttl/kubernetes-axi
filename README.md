@@ -333,6 +333,7 @@ Port-forward sessions freeze a named pod and up to eight numeric remote ports.
 The Artium client binds loopback listeners and carries independent connections over the owning session's authenticated tunnel.
 Client-initiated EOF allows remote output to drain.
 The pinned kubectl port-forward transport (client-go v0.32.2) resets the stream after remote EOF, so continued client input after remote-initiated half-close is not supported in this slice.
+This accepted B4.3 scope amendment is tracked in [issue 26](https://github.com/knowttl/kubernetes-axi/issues/26).
 Unapproved ports and ungranted raw or nested proxy effects cannot bypass the shared policy.
 
 ```text
