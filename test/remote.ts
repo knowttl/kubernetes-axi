@@ -18,6 +18,8 @@ import { createConnection } from 'node:net';
 
 const core = '/api/v1/namespaces/synthetic-remote';
 const token = 'synthetic-issued-only-in-memory+/=';
+const credentialOutput = 'password: canary-password\n{"clientSecret":"canary-json"}\neyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl\n-----BEGIN RSA PRIVATE KEY-----\ncanary-key\n-----END RSA PRIVATE KEY-----\nhttps://synthetic.invalid/?sig=canary-signature&x=1\n';
+const credentialSafe = 'password: [REDACTED]\n{"clientSecret":"[REDACTED]"}\n[REDACTED]\n[REDACTED]\nhttps://synthetic.invalid/?[REDACTED]&x=1\n';
 export const executionToken = 'synthetic-execution-token+/(opaque)~!=';
 let revision = '1';
 let fallback = false;
@@ -39,6 +41,7 @@ export function remoteFixture(incoming: IncomingMessage, response: ServerRespons
   if (path === `${core}/pods/selected/log`) {
     response.writeHead(200, { 'content-type': 'text/plain' });
     response.write('synthetic followed log line\n'.repeat(8));
+    response.write(credentialOutput);
     if (url.searchParams.get('follow') !== 'true') response.end();
     return true;
   }
@@ -166,6 +169,9 @@ export async function checkRemote(context: {
               if (input.includes('secret')) {
                 socket.write(webSocketFrame(1, 'synthetic-selected-'));
                 socket.write(webSocketFrame(1, 'token\n'));
+                socket.write(webSocketFrame(1, credentialOutput));
+                socket.write(webSocketFrame(2, credentialOutput));
+                socket.write(webSocketFrame(1, 'ready> '));
               }
               if (input.includes('exit')) socket.end(Buffer.concat([webSocketFrame(3, input.includes('exitfail') ? JSON.stringify({ status: 'Failure', reason: 'NonZeroExitCode', details: { causes: [{ reason: 'ExitCode', message: '17' }] } }) : status), Buffer.from([0x88, 2, 3, 232])]));
             }
@@ -201,7 +207,7 @@ export async function checkRemote(context: {
         socket.once('close', () => child.kill('SIGTERM'));
       };
       if (tarDownload) { tar(Buffer.alloc(0), ['cf', '-', '-C', container, '--', commands[6]!]); return; }
-      if (commands[0] === 'echo-bytes' || tarUpload) {
+      if (commands[0] === 'echo-bytes' || tarUpload || url.pathname.endsWith('/attach') && url.searchParams.get('stdin') === 'true') {
         let pending = head;
         const input: Buffer[] = [];
         const receive = (chunk: Buffer): void => {
@@ -242,7 +248,22 @@ export async function checkRemote(context: {
   };
   try {
     environment.KUBERNETES_AXI_READ_ONLY = 'false';
-    await check('AC-BYTES-001:session stdin stdout stderr and EOF preserve arbitrary bytes', async () => {
+    await check('B5.1-terminal:stream redaction preserves credential filters across every chunk boundary', async () => {
+      const { Redactor } = await import(join(dirname(cli), '../dist/redaction.js')) as typeof import('../src/redaction.js');
+      const redactor = new Redactor();
+      redactor.register('synthetic-selected-token');
+      const input = Buffer.from(credentialOutput + 'synthetic-selected-token\nλ prompt> ');
+      for (let split = 1; split < input.length; split++) {
+        const stream = redactor.terminalStream();
+        const output = Buffer.concat([stream.push(input.subarray(0, split)), stream.push(input.subarray(split)), stream.end()]);
+        assert.equal(output.toString(), credentialSafe + '[REDACTED]\nλ prompt> ');
+      }
+      const stream = redactor.terminalStream();
+      assert.equal(stream.push(Buffer.from('λ prompt> ')).toString(), 'λ prompt> ');
+      const bytes = [...Buffer.from(credentialOutput)].map(byte => stream.push(Buffer.from([byte])));
+      assert.equal(Buffer.concat([...bytes, stream.end()]).toString(), credentialSafe);
+    });
+    for (const [operation, container] of [['exec', 'selected-container'], ['attach', 'selected-container'], ['attach', 'terminal-container']] as const) await check(`AC-BYTES-001:session ${operation} ${container} stdin stdout stderr and EOF preserve arbitrary bytes`, async () => {
       const bytes = Buffer.from([0, 255, 254, 128, 10, 13, 0]);
       const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       const events = new EventEmitter();
@@ -257,7 +278,8 @@ export async function checkRemote(context: {
       });
       const prepared = once(events, 'prepared', { signal: AbortSignal.timeout(15000) });
       const closed = once(child, 'close');
-      child.send({ action: 'start', args: ['prepare', '--', 'exec', 'selected', '-n', 'synthetic-remote', '-i', '--', 'echo-bytes'], stdinBase64: bytes.toString('base64'), timeoutMs: 10000 });
+      forwarded.length = 0;
+      child.send({ action: 'start', args: ['prepare', '--', operation, 'selected', '-n', 'synthetic-remote', '-c', container, '-i', ...(operation === 'exec' ? ['--', 'echo-bytes'] : [])], stdinBase64: bytes.toString('base64'), timeoutMs: 10000 });
       const [{ preview }] = await prepared as [{ preview: { digest: string } }];
       const exited = once(events, 'exit', { signal: AbortSignal.timeout(15000) });
       child.send({ action: 'confirm', digest: preview.digest });
@@ -267,6 +289,10 @@ export async function checkRemote(context: {
       assert.deepEqual(Buffer.concat(output.stdout), bytes);
       assert.deepEqual(Buffer.concat(output.stderr), Buffer.from([255, 0, 128]));
       assert.deepEqual(result, { event: 'exit', exitCode: 0, stdoutEOF: true, stderrEOF: true });
+      const query = new URLSearchParams(forwarded.at(-1)!.query);
+      assert.equal(query.get('tty'), null);
+      assert.equal(query.get('stderr'), 'true');
+      assert.equal(query.get('stdin'), 'true');
     });
     await check('AC-SESSION-002:private host disconnect removes the running credential files', async () => {
       const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
@@ -317,6 +343,9 @@ export async function checkRemote(context: {
         await session.waitFor('"Width":120');
         session.send({ input: Buffer.from('secret\n').toString('hex') });
         await session.waitFor('[REDACTED]');
+        await session.waitFor('ready> ');
+        assert(!session.output().includes('canary-'), session.output());
+        assert(!session.output().includes('eyJhbGci'), session.output());
         session.send({ input: Buffer.from('exit\n').toString('hex') });
         assert.equal(await session.closed, 0, session.output());
         assert.match(session.output(), /input:657869740a/);
@@ -345,6 +374,11 @@ export async function checkRemote(context: {
       const session = terminal([cli, 'native', '--', ...args], environment);
       try {
         await session.waitFor(expected);
+        if (name === 'follow') {
+          await session.waitFor('https://synthetic.invalid/?[REDACTED]&x=1');
+          assert(!session.output().includes('canary-'), session.output());
+          assert(!session.output().includes('eyJhbGci'), session.output());
+        }
         session.send({ signal: 'SIGTERM' });
         assert.equal(await session.closed, 143, session.output());
         assert.deepEqual(readdirSync(environment.TMPDIR!), []);

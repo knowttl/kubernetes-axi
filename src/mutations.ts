@@ -301,7 +301,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
     const terminal = !invocation.session && invocation.flags.get('stdin') === 'true';
     // kubectl disables TTY without stdin; attach also follows the container's
     // allocated TTY rather than the requested flag alone.
-    const tty = invocation.flags.get('stdin') === 'true' && (invocation.command.path === 'attach' ? selected.tty === true : invocation.flags.get('tty') === 'true');
+    const tty = terminal && (invocation.command.path === 'attach' ? selected.tty === true : invocation.flags.get('tty') === 'true');
     const query = new URLSearchParams({ container, stdout: 'true', ...(!tty ? { stderr: 'true' } : {}) });
     if (tty) query.set('tty', 'true');
     if (!invocation.session && !terminal) query.set('timeout', '5s');

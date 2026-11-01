@@ -1,3 +1,14 @@
+import { StringDecoder } from 'node:string_decoder';
+
+const fields = 'token|password|clientSecret|privateKey|client-key-data|authorization';
+const textRules: [RegExp, string][] = [
+  [/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[REDACTED]'],
+  [/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED]'],
+  [new RegExp(`("(?:${fields})"\\s*:\\s*)"(?:\\\\.|[^"\\\\])*"`, 'gi'), '$1"[REDACTED]"'],
+  [new RegExp(`^(\\s*(?:${fields})\\s*:\\s*).+$`, 'gmi'), '$1[REDACTED]'],
+  [/(?:AccountKey=|sig=)[^&\s]+/gi, '[REDACTED]'],
+];
+
 export class Redactor {
   private readonly forms = new Set<string>();
 
@@ -15,11 +26,8 @@ export class Redactor {
 
   text(value: string): string {
     for (const form of [...this.forms].sort((a, b) => b.length - a.length)) value = value.split(form).join('[REDACTED]');
-    return value.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[REDACTED]')
-      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED]')
-      .replace(/("(?:token|password|clientSecret|privateKey|client-key-data|authorization)"\s*:\s*)"(?:\\.|[^"\\])*"/gi, '$1"[REDACTED]"')
-      .replace(/^(\s*(?:token|password|clientSecret|privateKey|client-key-data|authorization)\s*:\s*).+$/gmi, '$1[REDACTED]')
-      .replace(/(?:AccountKey=|sig=)[^&\s]+/gi, '[REDACTED]');
+    for (const [pattern, replacement] of textRules) value = value.replace(pattern, replacement);
+    return value;
   }
 
   value(data: unknown): unknown {
@@ -30,22 +38,47 @@ export class Redactor {
   }
 
   terminalStream(): { push: (bytes: Buffer) => Buffer; end: () => Buffer } {
-    let pending = Buffer.alloc(0);
+    const decoder = new StringDecoder('utf8');
+    const names = fields.split('|');
+    const markers = ['-----BEGIN ', 'eyJ', 'AccountKey=', 'sig=', ...names.map(name => `"${name}"`)];
+    let pending = '';
+    let lineStart = true;
     const flush = (final: boolean): Buffer => {
-      const patterns = [...this.forms].map(form => Buffer.from(form)).sort((a, b) => b.length - a.length);
-      const output: Buffer[] = [];
-      let index = 0;
-      while (index < pending.length) {
-        const remaining = pending.subarray(index);
-        if (!final && patterns.some(pattern => remaining.length < pattern.length && pattern.subarray(0, remaining.length).equals(remaining))) break;
-        const match = patterns.find(pattern => remaining.subarray(0, pattern.length).equals(pattern));
-        if (match) { output.push(Buffer.from('[REDACTED]')); index += match.length; }
-        else { output.push(pending.subarray(index, index + 1)); index++; }
+      let count = pending.length;
+      if (!final) {
+        const lower = pending.toLowerCase();
+        for (const marker of [...markers, ...this.forms]) {
+          const insensitive = markers.includes(marker);
+          for (let size = 1; size < marker.length && size <= pending.length; size++) {
+            if ((insensitive ? lower : pending).endsWith((insensitive ? marker.toLowerCase() : marker).slice(0, size))) count = Math.min(count, pending.length - size);
+          }
+        }
+        const unfinished = [
+          /-----BEGIN [^-]*(?:-[^-]*){0,4}$/g,
+          /-----BEGIN [^-]*PRIVATE KEY-----(?:(?!-----END [^-]*PRIVATE KEY-----)[\s\S])*$/g,
+          /eyJ[A-Za-z0-9_.-]*$/g,
+          /(?:AccountKey=|sig=)[^&\s]*$/gi,
+          new RegExp(`"(?:${fields})"\\s*(?::\\s*(?:"(?:\\\\.|[^"\\\\])*\\\\?)?)?$`, 'gi'),
+        ];
+        for (const pattern of unfinished) for (const match of pending.matchAll(pattern)) count = Math.min(count, match.index);
+        const start = pending.lastIndexOf('\n') + 1;
+        if (start > 0 || lineStart) {
+          const line = pending.slice(start);
+          const trimmed = line.trimStart().toLowerCase();
+          if (names.some(name => name.toLowerCase().startsWith(trimmed)) || new RegExp(`^\\s*(?:${fields})\\s*(?::[^\\n]*)?$`, 'i').test(line)) count = Math.min(count, start);
+        }
+        const spans = [...textRules.flatMap(([pattern]) => [...pending.matchAll(pattern)]),
+          ...[...this.forms].flatMap(form => [...pending.matchAll(new RegExp(form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))])];
+        for (const match of spans.sort((a, b) => b.index - a.index)) {
+          if (match.index < count && match.index + match[0].length > count) count = match.index;
+        }
       }
-      pending = Buffer.from(pending.subarray(index));
-      return Buffer.concat(output);
+      const safe = pending.slice(0, count);
+      pending = pending.slice(count);
+      if (safe) lineStart = safe.endsWith('\n');
+      return Buffer.from(this.text(safe));
     };
-    return { push: bytes => { pending = Buffer.concat([pending, bytes]); return flush(false); }, end: () => flush(true) };
+    return { push: bytes => { pending += decoder.write(bytes); return flush(false); }, end: () => { pending += decoder.end(); return flush(true); } };
   }
 
   byteStream(): { push: (bytes: Buffer) => Buffer; end: () => Buffer } {
