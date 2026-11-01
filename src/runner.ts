@@ -173,7 +173,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       return result;
     }
     if (invocation.nativeConfig) {
-      const loaded = await nativeConfig(binary, invocation.nativeConfig, flags.get('context'), directory, invocation.trustExec, redactor, cancellation.signal);
+      const loaded = await nativeConfig(binary, invocation.nativeConfig, flags.get('context'), directory, invocation.trustExec, redactor, cancellation.signal, invocation.command.effect === 'clusterWrite');
       close = loaded.close;
       namespace = flags.get('namespace') ?? loaded.namespace;
       source = loaded.source;

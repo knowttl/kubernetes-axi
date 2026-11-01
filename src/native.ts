@@ -27,7 +27,7 @@ export async function inspectNative(binary: string, snapshot: string, redactor: 
   } catch { throw new Failure('CONFIG_INVALID', 'The selected native kubeconfig is invalid.'); }
 }
 
-export async function nativeConfig(binary: string, selection: string, context: string | undefined, directory: string, trustExec: boolean, redactor: Redactor, signal: AbortSignal): Promise<{ config: object; binding: string; source: string; namespace: string; close: () => Promise<void> }> {
+export async function nativeConfig(binary: string, selection: string, context: string | undefined, directory: string, trustExec: boolean, redactor: Redactor, signal: AbortSignal, resourceMutation: boolean): Promise<{ config: object; binding: string; source: string; namespace: string; close: () => Promise<void> }> {
   const paths = selection === 'ambient' ? (process.env.KUBECONFIG ? process.env.KUBECONFIG.split(delimiter).filter(Boolean) : [join((await import('node:os')).homedir(), '.kube', 'config')]) : [selection];
   if (!paths.length || paths.some(path => !isAbsolute(path))) throw new Failure('CONFIG_INVALID', 'Select absolute native kubeconfig paths.');
   const merged: Config = { clusters: [], users: [], contexts: [] };
@@ -55,6 +55,7 @@ export async function nativeConfig(binary: string, selection: string, context: s
   if (!selected || !clusterEntry?.cluster || !userEntry?.user) throw new Failure('CONFIG_INVALID', 'Select an existing native context with a cluster and identity.');
   const cluster = { ...clusterEntry.cluster };
   const user = { ...userEntry.user };
+  if (user.exec && resourceMutation) throw new Failure('AUTH_HELPER_MUTATION_UNAVAILABLE', 'ExecCredential helper identities cannot prepare, confirm or server-dry-run resource mutations until principal binding is supported. Use a static token or client-certificate identity.');
   if (['as', 'as-uid', 'as-groups', 'as-user-extra'].some(field => Object.hasOwn(user, field))) throw new Failure('USAGE', 'Native kubeconfig impersonation is unavailable under the isolated bounded-read policy (impersonation).', 2);
   const server = new URL(String(cluster.server));
   if (server.protocol !== 'https:' || server.username || server.password || cluster['insecure-skip-tls-verify'] || cluster['proxy-url']) throw new Failure('CONFIG_INVALID', 'Native contexts require verified HTTPS without a proxy override.');

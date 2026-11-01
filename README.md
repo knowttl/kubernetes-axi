@@ -289,6 +289,10 @@ Redaction covers literal, JavaScript and Go JSON-escaped, URI-encoded and base64
 Raw helper output and failures never reach public streams.
 The helper receives its native API version, cluster information and noninteractive execution information.
 Its existing environment and cache remain helper-owned under the local ambient exception; credentials are never imported into AXI storage.
+ExecCredential helper identities cannot use `prepare`, `confirm` or `server-dry-run` for resource mutations because the helper's actual principal is not bound to the preview.
+These workflows fail with `AUTH_HELPER_MUTATION_UNAVAILABLE` before any API request or helper acquisition, including with `--trust-exec`.
+Use a static token or client-certificate identity for mutations; helper reads, authorization reviews and identity reviews remain supported.
+Principal binding for future helper mutations is tracked in [issue #19](https://github.com/knowttl/kubernetes-axi/issues/19).
 Helpers requiring a terminal, legacy auth-provider plugins and native Windows helper channels fail explicitly; their commissioning remains pending.
 
 Native configuration operations require a single explicit source path.

@@ -267,6 +267,37 @@ try {
       assert.notEqual(failure.code, 0); assert.deepEqual(readFileSync(nativeFile), beforeFailure);
     } finally { writeFileSync(nativeFile, original); environment.KUBERNETES_AXI_READ_ONLY = 'true'; }
   }));
+  await check('R10-helper-mutations-refused-before-acquisition', async () => local(async () => {
+    const original = readFileSync(nativeFile);
+    const counter = join(directory, 'mutation-helper-count');
+    const helper = structuredClone(nativeSettings);
+    helper.users[0]!.user = { exec: { apiVersion: 'client.authentication.k8s.io/v1', command: process.execPath, args: [join(root, 'test/credential-helper.ts')], interactiveMode: 'Never', provideClusterInfo: true,
+      env: [{ name: 'SYNTHETIC_HELPER_COUNTER', value: counter }] } };
+    writeFileSync(nativeFile, JSON.stringify(helper));
+    writeFileSync(counter, '0');
+    environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    try {
+      for (const trust of [[], ['--trust-exec']]) {
+        for (const args of [
+          ['prepare', '--', 'patch', 'configmap', 'selected', '-n', 'synthetic-b3', '--type=merge', '-p', '{"data":{"value":"after"}}'],
+          ['server-dry-run', '--', 'create', 'configmap', 'helper-created', '--from-literal=value=after'],
+          ['confirm', '00000000-0000-0000-0000-000000000000', '--digest', '0'.repeat(64)],
+        ]) {
+          const result = await run(['--native-config', nativeFile, ...trust, ...args]);
+          assert.equal(result.code, 1, result.stdout + result.stderr);
+          const failure = (decode(result.stdout) as any).error;
+          assert.equal(failure.code, 'AUTH_HELPER_MUTATION_UNAVAILABLE');
+          assert.match(failure.message, /ExecCredential.*principal binding/);
+          assert.equal(requests.length, 0);
+          assert.equal(readFileSync(counter, 'utf8'), '0');
+        }
+      }
+      const identity = await compact('--native-config', nativeFile, '--trust-exec', 'auth', 'whoami');
+      assert.equal(identity.reviews[0].status.userInfo.username, 'synthetic-identity');
+      const access = await compact('--native-config', nativeFile, '--trust-exec', 'auth', 'can-i', 'get', 'pods');
+      assert.equal(access.reviews[0].status.allowed, true);
+    } finally { writeFileSync(nativeFile, original); environment.KUBERNETES_AXI_READ_ONLY = 'true'; }
+  }));
   await check('CC-012-helper-renewal-redaction', async () => local(async () => {
     const original = readFileSync(nativeFile);
     const counter = join(directory, 'helper-count');
