@@ -48,7 +48,8 @@ Running `kubernetes-axi` with no arguments shows the selected source, isolated c
 ## Commands
 
 `kubernetes-axi --help` lists the compact read surface.
-`--version` prints the package version without loading the command graph.
+A bare `--version` prints the package version without loading the command graph.
+Version probes with selection flags, such as `--native-config <path> --version`, also print the package version without loading credentials or contacting the cluster.
 
 ```text
 kubernetes-axi version
@@ -72,6 +73,7 @@ Profiles belong to standard configuration; omit `--native-config` when running `
 Reads:
 
 - Compact reads discover resource names, aliases, scope and kinds dynamically, including custom resources.
+  Compact `get` accepts one resource type and a separate optional name; use `native -- get` for `TYPE/NAME`, comma lists or `all`.
 - Pods report name, namespace and phase, nodes report readiness, deployments report desired and available replicas, and `top` aggregates CPU and memory.
 - Use `get <resource> [name] -o json` for compact JSON.
   It serializes the same bounded summary as TOON, not the upstream object.
@@ -251,15 +253,19 @@ Insecure or redirected paths fail before credentials are read.
 ## Output and exit codes
 
 - Output is TOON by default; failures print `error:` with a `code` and `message`, and keep the upstream status where available.
-- Distinct codes cover NotFound, denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits.
+- Distinct codes cover missing resources, denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits.
+  Rejected read arguments use `BAD_REQUEST`, including invalid containers, unavailable previous logs and malformed selectors.
+  Missing execution pods and scale targets use `RESOURCE_NOT_FOUND`.
+  Missing saved preview or confirmation requests use `REQUEST_NOT_FOUND`; permission failures reading them use `REQUEST_UNREADABLE`.
+  An explicitly selected missing standard config file uses `CONFIG_NOT_FOUND`; a missing default config without a complete environment profile uses `AUTH_REQUIRED`.
 - Check `complete`, `truncated` and `continue` before treating a list as complete.
   An oversized server page is truncated with `complete: false`, and a bounded log snapshot never claims completeness.
   A nonempty `continue` also means the list is incomplete even when `truncated` is false; `truncated` describes local output clipping.
 - Repeated confirmation returns `replayed: true` without repeating the operation.
   Execution replays include the stored `exitCode` and preserve that process exit status; remote stdout and stderr are not retained for replay.
 - Empty event lists are successful.
-- A failed command exits 1.
-  `native` preserves the upstream exit status.
+- Usage errors exit 2; other failures exit 1.
+  Native commands and confirmed execution preserve the upstream process exit status.
 - The verification entry points exit 0 on pass, 1 on failure and 2 when a prerequisite is pending.
 
 ## Limitations
