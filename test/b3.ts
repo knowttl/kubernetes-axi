@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { decode } from '@toon-format/toon';
 
@@ -189,7 +189,9 @@ export async function checkMutations({ run, check, environment, directory, reque
   for (const [variant, expectedOutcome, exitCode] of [
     ['', 'committed', 0], ['conflict', 'failed', 1], ['loss-after-commit', 'uncertain', 1], ['eviction-pending', 'accepted_pending', 1],
   ] as const) await test(`AC-SESSION-003:worker mutation ${expectedOutcome} preserves exit status`, async () => {
-    const file = join(directory, 'session-manifest.json');
+    const workspace = join(environment.TMPDIR!, 'workspace');
+    mkdirSync(workspace, { mode: 0o700 });
+    const file = join(workspace, 'session-manifest.json');
     writeFileSync(file, JSON.stringify({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'selected', namespace: ns }, data: { value: 'after' } }));
     const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
     const events = new EventEmitter();
@@ -217,6 +219,7 @@ export async function checkMutations({ run, check, environment, directory, reque
       assert.equal(code, exitCode);
     } finally {
       if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; }
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
   await test('B3-disabled-writes', async () => {
