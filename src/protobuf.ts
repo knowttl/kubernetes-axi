@@ -5,7 +5,7 @@ import { Failure } from './errors.js';
 
 const root = protobuf.Root.fromJSON(protobufSchema).resolveAll();
 const envelopeType = root.lookupType('k8s.io.apimachinery.pkg.runtime.Unknown');
-const groups: Record<string, string> = { v1: 'core.v1', 'certificates.k8s.io/v1': 'certificates.v1', 'authorization.k8s.io/v1': 'authorization.v1',
+const groups: Record<string, string> = { v1: 'core.v1', 'apps/v1': 'apps.v1', 'certificates.k8s.io/v1': 'certificates.v1', 'authorization.k8s.io/v1': 'authorization.v1',
   'authentication.k8s.io/v1': 'authentication.v1', 'autoscaling/v1': 'autoscaling.v1', 'autoscaling/v2': 'autoscaling.v2', 'policy/v1': 'policy.v1',
   'rbac.authorization.k8s.io/v1': 'rbac.v1', 'batch/v1': 'batch.v1', 'networking.k8s.io/v1': 'networking.v1', 'scheduling.k8s.io/v1': 'scheduling.v1' };
 

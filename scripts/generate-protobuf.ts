@@ -7,6 +7,7 @@ import protobuf from 'protobufjs';
 // Official source files at the same module pin as kubectl and command metadata.
 const pins: Record<string, string> = {
   'api/core/v1': 'dd6cf89d7df51a09d62b9c57f645c90956195df301c3c62d204b569821599502',
+  'api/apps/v1': '2c8cfc9a8490a7e5f6bbc03c55b2bcf25bcebeaaf0c1a5beb9f42b1a9ed8bb8a',
   'api/certificates/v1': 'a64a67932d9d0ebfd0bba14848d766e49bc6213aa794d2ba48c24ebc5837f214',
   'api/authentication/v1': 'd7c49084083c28293edd9f4328d0f7cddee18b31b8ccb0686c7f64fa48e2eb43',
   'api/authorization/v1': 'f48b383d771bc5a70137b687de7a64399bc3ddb5716611e98fa93b88ad1c8ac7',

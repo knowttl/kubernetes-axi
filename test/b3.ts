@@ -328,6 +328,7 @@ export async function checkMutations({ run, check, environment, directory, reque
     assert.equal(effects.length, 0);
   });
   for (const [name, args, target, verify] of [
+    ['create-deployment-typed', ['create', 'deployment', 'b3-created', '-n', ns, '--image=synthetic:v1', '--replicas=2'], `${apps}/deployments/b3-created`, (body: any) => assert.equal(body.spec.replicas, 2)],
     ['run', ['run', 'b3-run', '-n', ns, '--image=synthetic:v1', '--restart=Never'], `${core}/pods/b3-run`, (body: any) => assert.equal(body.spec.containers[0].image, 'synthetic:v1')],
     ['expose', ['expose', 'deployment/selected', '-n', ns, '--name=b3-service', '--port=80'], `${core}/services/b3-service`, (body: any) => assert.equal(body.spec.ports[0].port, 80)],
     ['autoscale', ['autoscale', 'deployment/selected', '-n', ns, '--name=b3-hpa', '--min=1', '--max=3', '--cpu-percent=70'], `/apis/autoscaling/v1/namespaces/${ns}/horizontalpodautoscalers/b3-hpa`, (body: any) => assert.equal(body.spec.maxReplicas, 3)],
