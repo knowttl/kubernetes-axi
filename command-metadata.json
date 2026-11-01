@@ -946,7 +946,13 @@
       ],
       "use": "annotate [--overwrite] (-f FILENAME | TYPE NAME) KEY_1=VAL_1 ... KEY_N=VAL_N [--resource-version=version]",
       "description": "Update the annotations on a resource",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "api-resources",
@@ -2026,7 +2032,15 @@
       ],
       "use": "apply (-f FILENAME | -k DIRECTORY)",
       "description": "Apply a configuration to a resource by file name or stdin",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012",
+        "OP-014",
+        "OP-015"
+      ]
     },
     {
       "path": "apply edit-last-applied",
@@ -2386,7 +2400,15 @@
       ],
       "use": "edit-last-applied (RESOURCE/NAME | -f FILENAME)",
       "description": "Edit latest last-applied-configuration annotations of a resource/object",
-      "effect": "execution"
+      "effect": "execution",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012",
+        "OP-014",
+        "OP-015"
+      ]
     },
     {
       "path": "apply set-last-applied",
@@ -2710,7 +2732,15 @@
       ],
       "use": "set-last-applied -f FILENAME",
       "description": "Set the last-applied-configuration annotation on a live object to match the contents of a file",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012",
+        "OP-014",
+        "OP-015"
+      ]
     },
     {
       "path": "apply view-last-applied",
@@ -3025,7 +3055,15 @@
       ],
       "use": "view-last-applied (TYPE [NAME | -l label] | TYPE/NAME | -f FILENAME)",
       "description": "View the latest last-applied-configuration annotations of a resource/object",
-      "effect": "read"
+      "effect": "read",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012",
+        "OP-014",
+        "OP-015"
+      ]
     },
     {
       "path": "attach",
@@ -3592,7 +3630,10 @@
       ],
       "use": "auth",
       "description": "Inspect authorization",
-      "effect": "authorization"
+      "effect": "authorization",
+      "operations": [
+        "OP-021"
+      ]
     },
     {
       "path": "auth can-i",
@@ -3898,7 +3939,10 @@
       ],
       "use": "can-i VERB [TYPE | TYPE/NAME | NONRESOURCEURL]",
       "description": "Check whether an action is allowed",
-      "effect": "authorization"
+      "effect": "authorization",
+      "operations": [
+        "OP-021"
+      ]
     },
     {
       "path": "auth reconcile",
@@ -4249,7 +4293,15 @@
       ],
       "use": "reconcile -f FILENAME",
       "description": "Reconciles rules for RBAC role, role binding, cluster role, and cluster role binding objects",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012",
+        "OP-013",
+        "OP-014"
+      ]
     },
     {
       "path": "auth whoami",
@@ -4546,7 +4598,10 @@
       ],
       "use": "whoami",
       "description": "Experimental: Check self subject attributes",
-      "effect": "authorization"
+      "effect": "authorization",
+      "operations": [
+        "OP-028"
+      ]
     },
     {
       "path": "autoscale",
@@ -4942,7 +4997,13 @@
       ],
       "use": "autoscale (-f FILENAME | TYPE NAME | TYPE/NAME) [--min=MINPODS] --max=MAXPODS [--cpu-percent=CPU]",
       "description": "Auto-scale a deployment, replica set, stateful set, or replication controller",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "certificate",
@@ -5203,7 +5264,11 @@
       ],
       "use": "certificate SUBCOMMAND",
       "description": "Modify certificate resources",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-011",
+        "OP-022"
+      ]
     },
     {
       "path": "certificate approve",
@@ -5536,7 +5601,11 @@
       ],
       "use": "approve (-f FILENAME | NAME)",
       "description": "Approve a certificate signing request",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-011",
+        "OP-022"
+      ]
     },
     {
       "path": "certificate deny",
@@ -5869,7 +5938,11 @@
       ],
       "use": "deny (-f FILENAME | NAME)",
       "description": "Deny a certificate signing request",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-011",
+        "OP-022"
+      ]
     },
     {
       "path": "cluster-info",
@@ -11388,7 +11461,11 @@
       ],
       "use": "cordon NODE",
       "description": "Mark node as unschedulable",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "cp",
@@ -12081,7 +12158,13 @@
       ],
       "use": "create -f FILENAME",
       "description": "Create a resource from a file or from stdin",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create clusterrole",
@@ -12459,7 +12542,13 @@
       ],
       "use": "clusterrole NAME --verb=verb --resource=resource.group [--resource-name=resourcename] [--dry-run=server|client|none]",
       "description": "Create a cluster role",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create clusterrolebinding",
@@ -12769,7 +12858,7 @@
           "default": "[]",
           "noOpt": "",
           "usage": "Usernames to bind to the clusterrole. The flag can be repeated to add multiple users.",
-          "effect": "identity"
+          "effect": "argument"
         },
         {
           "name": "username",
@@ -12819,7 +12908,13 @@
       ],
       "use": "clusterrolebinding NAME --clusterrole=NAME [--user=username] [--group=groupname] [--serviceaccount=namespace:serviceaccountname] [--dry-run=server|client|none]",
       "description": "Create a cluster role binding for a particular cluster role",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create configmap",
@@ -13190,7 +13285,13 @@
       ],
       "use": "configmap NAME [--from-file=[key=]source] [--from-literal=key1=value1] [--dry-run=server|client|none]",
       "description": "Create a config map from a local file, directory or literal value",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create cronjob",
@@ -13552,7 +13653,13 @@
       ],
       "use": "cronjob NAME --image=image --schedule='0/5 * * * ?' -- [COMMAND] [args...]",
       "description": "Create a cron job with the specified name",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create deployment",
@@ -13914,7 +14021,13 @@
       ],
       "use": "deployment NAME --image=image -- [COMMAND] [args...]",
       "description": "Create a deployment with the specified name",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create ingress",
@@ -14285,7 +14398,13 @@
       ],
       "use": "ingress NAME --rule=host/path=service:port[,tls[=secret]] ",
       "description": "Create an ingress with the specified name",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create job",
@@ -14636,7 +14755,13 @@
       ],
       "use": "job NAME --image=image [--from=cronjob/name] -- [COMMAND] [args...]",
       "description": "Create a job with the specified name",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create namespace",
@@ -14971,7 +15096,13 @@
       ],
       "use": "namespace NAME [--dry-run=server|client|none]",
       "description": "Create a namespace with the specified name",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create poddisruptionbudget",
@@ -15333,7 +15464,13 @@
       ],
       "use": "poddisruptionbudget NAME --selector=SELECTOR --min-available=N [--dry-run=server|client|none]",
       "description": "Create a pod disruption budget with the specified name",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create priorityclass",
@@ -15704,7 +15841,13 @@
       ],
       "use": "priorityclass NAME --value=VALUE --global-default=BOOL [--dry-run=server|client|none]",
       "description": "Create a priority class with the specified name",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create quota",
@@ -16057,7 +16200,13 @@
       ],
       "use": "quota NAME [--hard=key1=value1,key2=value2] [--scopes=Scope1,Scope2] [--dry-run=server|client|none]",
       "description": "Create a quota with the specified name",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create role",
@@ -16417,7 +16566,13 @@
       ],
       "use": "role NAME --verb=verb --resource=resource.group/subresource [--resource-name=resourcename] [--dry-run=server|client|none]",
       "description": "Create a role with single rule",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create rolebinding",
@@ -16736,7 +16891,7 @@
           "default": "[]",
           "noOpt": "",
           "usage": "Usernames to bind to the role. The flag can be repeated to add multiple users.",
-          "effect": "identity"
+          "effect": "argument"
         },
         {
           "name": "username",
@@ -16786,7 +16941,13 @@
       ],
       "use": "rolebinding NAME --clusterrole=NAME|--role=NAME [--user=username] [--group=groupname] [--serviceaccount=namespace:serviceaccountname] [--dry-run=server|client|none]",
       "description": "Create a role binding for a particular role or cluster role",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create secret",
@@ -17047,7 +17208,13 @@
       ],
       "use": "secret (docker-registry | generic | tls)",
       "description": "Create a secret using a specified subcommand",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create secret docker-registry",
@@ -17434,7 +17601,13 @@
       ],
       "use": "docker-registry NAME --docker-username=user --docker-password=password --docker-email=email [--docker-server=string] [--from-file=[key=]source] [--dry-run=server|client|none]",
       "description": "Create a secret for use with a Docker registry",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create secret generic",
@@ -17812,7 +17985,13 @@
       ],
       "use": "generic NAME [--type=string] [--from-file=[key=]source] [--from-literal=key1=value1] [--dry-run=server|client|none]",
       "description": "Create a secret from a local file, directory, or literal value",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create secret tls",
@@ -18172,7 +18351,13 @@
       ],
       "use": "tls NAME --cert=path/to/cert/file --key=path/to/key/file [--dry-run=server|client|none]",
       "description": "Create a TLS secret",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create service",
@@ -18435,7 +18620,13 @@
       ],
       "use": "service",
       "description": "Create a service using a specified subcommand",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create service clusterip",
@@ -18786,7 +18977,13 @@
       ],
       "use": "clusterip NAME [--tcp=<port>:<targetPort>] [--dry-run=server|client|none]",
       "description": "Create a ClusterIP service",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create service externalname",
@@ -19137,7 +19334,13 @@
       ],
       "use": "externalname NAME --external-name external.name [--dry-run=server|client|none]",
       "description": "Create an ExternalName service",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create service loadbalancer",
@@ -19479,7 +19682,13 @@
       ],
       "use": "loadbalancer NAME [--tcp=port:targetPort] [--dry-run=server|client|none]",
       "description": "Create a LoadBalancer service",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create service nodeport",
@@ -19830,7 +20039,13 @@
       ],
       "use": "nodeport NAME [--tcp=port:targetPort] [--dry-run=server|client|none]",
       "description": "Create a NodePort service",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create serviceaccount",
@@ -20165,7 +20380,13 @@
       ],
       "use": "serviceaccount NAME [--dry-run=server|client|none]",
       "description": "Create a service account with the specified name",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "create token",
@@ -20507,7 +20728,13 @@
       ],
       "use": "token SERVICE_ACCOUNT_NAME",
       "description": "Request a service account token",
-      "effect": "credentials"
+      "effect": "credentials",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "debug",
@@ -21398,7 +21625,14 @@
       ],
       "use": "delete ([-f FILENAME] | [-k DIRECTORY] | TYPE [(NAME | -l label | --all)])",
       "description": "Delete resources by file names, stdin, resources and names, or by resources and label selector",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-015",
+        "OP-016"
+      ]
     },
     {
       "path": "describe",
@@ -22443,7 +22677,15 @@
       ],
       "use": "drain NODE",
       "description": "Drain node in preparation for maintenance",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-011",
+        "OP-014",
+        "OP-006",
+        "OP-002",
+        "OP-023",
+        "OP-015"
+      ]
     },
     {
       "path": "edit",
@@ -24261,7 +24503,13 @@
       ],
       "use": "expose (-f FILENAME | TYPE NAME) [--port=port] [--protocol=TCP|UDP|SCTP] [--target-port=number-or-name] [--name=name] [--external-ip=external-ip-of-service] [--type=type]",
       "description": "Take a replication controller, service, deployment or pod and expose it as a new Kubernetes service",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "get",
@@ -25809,7 +26057,13 @@
       ],
       "use": "label [--overwrite] (-f FILENAME | TYPE NAME) KEY_1=VAL_1 ... KEY_N=VAL_N [--resource-version=version]",
       "description": "Update the labels on a resource",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "logs",
@@ -26871,7 +27125,13 @@
       ],
       "use": "patch (-f FILENAME | TYPE NAME) [-p PATCH|--patch-file FILE]",
       "description": "Update fields of a resource",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "plugin",
@@ -28482,7 +28742,15 @@
       ],
       "use": "replace -f FILENAME",
       "description": "Replace a resource by file name or stdin",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-013",
+        "OP-015",
+        "OP-012"
+      ]
     },
     {
       "path": "rollout",
@@ -28743,7 +29011,13 @@
       ],
       "use": "rollout SUBCOMMAND",
       "description": "Manage the rollout of a resource",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "rollout history",
@@ -29085,7 +29359,12 @@
       ],
       "use": "history (TYPE NAME | TYPE/NAME) [flags]",
       "description": "View rollout history",
-      "effect": "read"
+      "effect": "read",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011"
+      ]
     },
     {
       "path": "rollout pause",
@@ -29427,7 +29706,13 @@
       ],
       "use": "pause RESOURCE",
       "description": "Mark the provided resource as paused",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "rollout restart",
@@ -29769,7 +30054,13 @@
       ],
       "use": "restart RESOURCE",
       "description": "Restart a resource",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "rollout resume",
@@ -30111,7 +30402,13 @@
       ],
       "use": "resume RESOURCE",
       "description": "Resume a paused resource",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "rollout status",
@@ -30435,7 +30732,12 @@
       ],
       "use": "status (TYPE NAME | TYPE/NAME) [flags]",
       "description": "Show the status of the rollout",
-      "effect": "read"
+      "effect": "read",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011"
+      ]
     },
     {
       "path": "rollout undo",
@@ -30786,7 +31088,13 @@
       ],
       "use": "undo (TYPE NAME | TYPE/NAME) [flags]",
       "description": "Undo a previous rollout",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "run",
@@ -31362,7 +31670,13 @@
       ],
       "use": "run NAME --image=image [--env=\"key=value\"] [--port=port] [--dry-run=server|client] [--overrides=inline-json] [--command] -- [COMMAND] [args...]",
       "description": "Run a particular image on the cluster",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-012"
+      ]
     },
     {
       "path": "scale",
@@ -31758,7 +32072,13 @@
       ],
       "use": "scale [--resource-version=version] [--current-replicas=count] --replicas=COUNT (-f FILENAME | TYPE NAME)",
       "description": "Set a new size for a deployment, replica set, or replication controller",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-024"
+      ]
     },
     {
       "path": "set",
@@ -32019,7 +32339,13 @@
       ],
       "use": "set SUBCOMMAND",
       "description": "Set specific features on objects",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "set env",
@@ -32460,7 +32786,13 @@
       ],
       "use": "env RESOURCE/NAME KEY_1=VAL_1 ... KEY_N=VAL_N",
       "description": "Update environment variables on a pod template",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "set image",
@@ -32838,7 +33170,13 @@
       ],
       "use": "image (-f FILENAME | TYPE NAME) CONTAINER_NAME_1=CONTAINER_IMAGE_1 ... CONTAINER_NAME_N=CONTAINER_IMAGE_N",
       "description": "Update the image of a pod template",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "set resources",
@@ -33243,7 +33581,13 @@
       ],
       "use": "resources (-f FILENAME | TYPE NAME)  ([--limits=LIMITS & --requests=REQUESTS]",
       "description": "Update resource requests/limits on objects with pod templates",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "set selector",
@@ -33612,7 +33956,13 @@
       ],
       "use": "selector (-f FILENAME | TYPE NAME) EXPRESSIONS [--resource-version=version]",
       "description": "Set the selector on a resource",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "set serviceaccount",
@@ -33983,7 +34333,13 @@
       ],
       "use": "serviceaccount (-f FILENAME | TYPE NAME) SERVICE_ACCOUNT",
       "description": "Update the service account of a resource",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "set subject",
@@ -34329,7 +34685,7 @@
           "default": "[]",
           "noOpt": "",
           "usage": "Usernames to bind to the role",
-          "effect": "identity"
+          "effect": "argument"
         },
         {
           "name": "username",
@@ -34370,7 +34726,13 @@
       ],
       "use": "subject (-f FILENAME | TYPE NAME) [--user=username] [--group=groupname] [--serviceaccount=namespace:serviceaccountname] [--dry-run=server|client|none]",
       "description": "Update the user, group, or service account in a role binding or cluster role binding",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "taint",
@@ -34721,7 +35083,13 @@
       ],
       "use": "taint NODE NAME KEY_1=VAL_1:TAINT_EFFECT_1 ... KEY_N=VAL_N:TAINT_EFFECT_N",
       "description": "Update the taints on one or more nodes",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-002",
+        "OP-003",
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "top",
@@ -35906,7 +36274,11 @@
       ],
       "use": "uncordon NODE",
       "description": "Mark node as schedulable",
-      "effect": "clusterWrite"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-011",
+        "OP-014"
+      ]
     },
     {
       "path": "version",

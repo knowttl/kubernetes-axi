@@ -13,6 +13,7 @@ import { privateDirectory, writePrivate } from './private-files.js';
 import { readPrivate } from './private-files.js';
 import { nativeConfig, inspectNative } from './native.js';
 import type { Redactor } from './redaction.js';
+import { mutationSession } from './mutations.js';
 
 const execute = promisify(execFile);
 const pins = JSON.parse(await readFile(new URL('../kubectl-pins.json', import.meta.url), 'utf8')) as {
@@ -23,6 +24,10 @@ const validVersion = ajv.compile<{ major: string; minor: string; gitVersion: str
   type: 'object', required: ['major', 'minor', 'gitVersion'],
   properties: { major: { const: '1' }, minor: { type: 'string', pattern: '^[0-9]+\\+?$' }, gitVersion: { type: 'string' } },
 });
+function compatibleVersion(value: unknown): asserts value is { major: string; minor: string; gitVersion: string } {
+  if (!validVersion(value)) throw new Failure('UPSTREAM_INVALID', 'The server version response is invalid.');
+  if (!pins.supportedServerMinors.includes(Number.parseInt(value.minor, 10))) throw new Failure('BINARY_INCOMPATIBLE', 'Server version is outside the recorded kubectl skew matrix.');
+}
 interface Resource { name: string; singularName: string; namespaced: boolean; kind: string; verbs: string[]; shortNames?: string[]; prefix: string; apiVersion: string }
 interface ObjectEnvelope {
   apiVersion?: string; kind?: string;
@@ -156,6 +161,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
   const raw = (path: string): Promise<unknown> => invoke(['get', `--raw=${path}`]);
   let close = async (): Promise<void> => {};
   let source = identity?.source ?? '';
+  let binding = JSON.stringify(identity);
   try {
     if (invocation.nativeConfig && invocation.native && invocation.command.path.startsWith('config ')) {
       if (invocation.nativeConfig === 'ambient') throw new Failure('CONFIG_INVALID', 'Native config operations require one explicitly selected source file.');
@@ -167,21 +173,47 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       return result;
     }
     if (invocation.nativeConfig) {
-      const loaded = await nativeConfig(binary, invocation.nativeConfig, flags.get('context'), directory, invocation.trustExec, redactor, cancellation.signal);
+      const loaded = await nativeConfig(binary, invocation.nativeConfig, flags.get('context'), directory, invocation.trustExec, redactor, cancellation.signal, invocation.command.effect === 'clusterWrite');
       close = loaded.close;
       namespace = flags.get('namespace') ?? loaded.namespace;
       source = loaded.source;
+      binding = loaded.binding;
       await writePrivate(config, JSON.stringify(loaded.config));
     } else await writePrivate(config, JSON.stringify({
       apiVersion: 'v1', kind: 'Config',
       clusters: [{ name: 'selected', cluster: { server: profile!.origin, 'certificate-authority-data': Buffer.from(profile!.certificateAuthority).toString('base64') } }],
       users: [{ name: 'selected', user }], contexts: [{ name: 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': 'selected',
     }));
+    if (invocation.workflow || invocation.command.effect === 'authorization') {
+      const session = await mutationSession(config, invocation, namespace, redactor, cancellation.signal, compatibleVersion, binding);
+      const closeIdentity = close;
+      close = async () => { await session.close(); await closeIdentity(); };
+      if (invocation.workflow?.kind === 'confirm') return await session.finish();
+      await writePrivate(config, JSON.stringify(session.config));
+      const args = [...invocation.argv];
+      if (invocation.workflow) {
+        if (invocation.command.flags.some(flag => flag.name === 'dry-run')) args.push('--dry-run=server');
+        if (invocation.command.flags.some(flag => flag.name === 'wait')) args.push('--wait=false');
+      }
+      const result = await invoke(args, 'native') as NativeOutput;
+      if (invocation.command.effect === 'authorization') {
+        const review = await session.finish(result.exitCode === 0);
+        process.exitCode = result.exitCode;
+        return invocation.native ? result : review;
+      }
+      if (result.exitCode !== 0) {
+        // Expose a guarded refusal before falling back to the native failure.
+        await session.finish(false);
+        if (invocation.native) return result;
+        throw new Failure('UPSTREAM_FAILED', 'The operation could not be prepared or validated; check its resource, permissions and arguments.');
+      }
+      const finished = await session.finish();
+      return finished;
+    }
     const client = await invoke(['version', '--client=true', '-o', 'json']) as { clientVersion?: { gitVersion?: string } };
     if (client.clientVersion?.gitVersion !== pins.version) throw new Failure('BINARY_VERSION', 'Restore the recorded managed kubectl version.');
     const version = await raw('/version');
-    if (!validVersion(version)) throw new Failure('UPSTREAM_INVALID', 'The server version response is invalid.');
-    if (!pins.supportedServerMinors.includes(Number.parseInt(version.minor, 10))) throw new Failure('BINARY_INCOMPATIBLE', 'Server version is outside the recorded kubectl skew matrix.');
+    compatibleVersion(version);
     const provenance = { source, kubectlVersion: pins.version, kubectlSha256: digest };
     if (invocation.native) return await invoke(invocation.argv, 'native') as NativeOutput;
     const command = invocation.command.path;
@@ -190,7 +222,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       const logs = await invoke([...invocation.argv, ...(flags.has('tail') ? [] : ['--tail=100']), ...(flags.has('limit-bytes') ? [] : ['--limit-bytes=65536'])], 'text') as string;
       return { ...provenance, logs, complete: false, truncated: Buffer.byteLength(logs) >= Number(flags.get('limit-bytes') ?? 65536), bound: 'tail and byte limits; snapshot only' };
     }
-    if (command === 'describe' || command === 'explain') return { ...provenance, text: await invoke(invocation.argv, 'text'), complete: false, bound: 'execution and byte limits' };
+    if (['describe', 'explain', 'rollout history', 'rollout status'].includes(command)) return { ...provenance, text: await invoke(invocation.argv, 'text'), complete: false, bound: 'execution and byte limits' };
     const core = await raw('/api');
     const groups = await raw('/apis');
     if (!validCore(core) || !validGroups(groups) || groups.groups.some(group => !group.versions.some(version => version.groupVersion === group.preferredVersion.groupVersion) || group.versions.some(version => !version.groupVersion.startsWith(`${group.name}/`)))) throw new Failure('UPSTREAM_INVALID', 'API discovery returned an invalid envelope.');

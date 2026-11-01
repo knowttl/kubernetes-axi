@@ -93,14 +93,14 @@ def run(args):
             raise ValueError("offline verification requires a loopback-only network namespace")
         subprocess.run(["ip", "link", "set", "lo", "up"], check=True, capture_output=True, timeout=10)
     pack = args.pack.resolve()
-    if args.command == "task" and args.target in ("B2.1", "B2.2", "B2.3", "B2.4"):
+    if args.command == "task" and args.target in ("B2.1", "B2.2", "B2.3", "B2.4", "B3.1", "B3.2"):
         private = subprocess.run(["node", str(ROOT / "test/private-files.ts")], cwd=ROOT, timeout=30)
         if private.returncode:
             return private.returncode
         result = subprocess.run(
             ["unshare", "--user", "--map-root-user", "--net", "--", "sh", "-c",
-             'ip link set lo up && exec node "$1" --pack "$2"', "verify-b2", str(ROOT / "test/b2.ts"), str(pack)],
-            cwd=ROOT, timeout=180,
+             'ip link set lo up && exec node "$1" --pack "$2"', "verify-b2-b3", str(ROOT / "test/b2.ts"), str(pack)],
+            cwd=ROOT, timeout=300,
         )
         if result.returncode or args.artium is None:
             return result.returncode

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
+import { mutationFixture, checkMutations } from './b3.ts';
 
 const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
@@ -34,14 +35,18 @@ const core = discovery('v1', [resource('pods', 'Pod', true, ['po']), resource('n
 const groups = fixture('P-003').body;
 groups.groups.push(apiGroup('metrics.k8s.io', 'v1beta1'), apiGroup('synthetic.example', 'v1'));
 groups.groups.at(-1).versions.push({ groupVersion: 'synthetic.example/v1beta1', version: 'v1beta1' });
+groups.groups.push(apiGroup('networking.k8s.io', 'v1'));
 const requests: string[] = [];
 const identities: string[] = [];
 const helperTokens = ['synthetic-helper-first&+/=', 'synthetic-helper-renewed&+/='];
 let variant = '';
 let cancelRequest: (() => void) | undefined;
 let override: { path: string; envelope: Envelope | 'malformed' | 'timeout' | 'oversize' } | undefined;
+const nativePrefix = '/k8s/clusters/c1';
+const rootDecoy = { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'prefixed', namespace: 'synthetic-b3', uid: 'root-decoy', resourceVersion: '1' }, data: { value: 'root-decoy' } };
 const server = createServer({ key: readFileSync(join(directory, 'server.key')), cert: readFileSync(join(directory, 'server.crt')) }, (request, response) => {
   requests.push(request.url!);
+  if (request.url!.startsWith(nativePrefix + '/')) request.url = request.url!.slice(nativePrefix.length);
   const url = new URL(request.url!, 'https://127.0.0.1');
   const path = url.pathname;
   if (variant === 'cancel') { cancelRequest?.(); return; }
@@ -57,12 +62,17 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
   };
   identities.push(request.headers.authorization ?? '');
   if (!['synthetic-selected-token', ...helperTokens].some(token => request.headers.authorization === `Bearer ${token}`)) return send({ status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } });
+  if (variant === 'native-prefix' && !requests.at(-1)!.startsWith(nativePrefix + '/') && path.startsWith('/api/v1/namespaces/synthetic-b3/configmaps')) {
+    if (request.method !== 'GET') rootDecoy.data.value = 'wrong-cluster-write';
+    return json(rootDecoy);
+  }
   if (override?.path === path) {
     if (override.envelope === 'timeout') return; // Server remains open until the client's real deadline cancels it.
     if (override.envelope === 'malformed') { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{broken'); return; }
     if (override.envelope === 'oversize') { response.writeHead(200); response.end('x'.repeat(5 * 1024 * 1024)); return; }
     return send(override.envelope);
   }
+  if (mutationFixture(request, response, variant === 'native-prefix' && request.method === 'PATCH')) return;
   if (path === '/version') return send(fixture('P-001'));
   if (path === '/api') return send(fixture('P-002'));
   if (path === '/apis') return json(groups);
@@ -125,6 +135,8 @@ const run = async (args: string[], executable = cli): Promise<{ code: number; st
   catch (error) { const result = error as { code: number; stdout: string; stderr: string }; return { code: result.code, stdout: result.stdout, stderr: result.stderr }; }
 };
 const check = async (id: string, test: () => Promise<void>): Promise<void> => {
+  const filter = process.argv.indexOf('--case');
+  if (filter >= 0 && !new RegExp(process.argv[filter + 1]!).test(id)) return;
   requests.length = 0; override = undefined; variant = '';
   try { await test(); cases.push({ case: id, outcome: 'pass' }); }
   catch (error) { cases.push({ case: id, outcome: 'failure' }); console.error(id, error); process.exitCode = 1; }
@@ -149,6 +161,7 @@ const local = async (test: () => Promise<void>): Promise<void> => {
   try { await test(); } finally { environment.KUBERNETES_AXI_CONFIG = selected; }
 };
 try {
+  if (!process.argv.includes('--b3-only')) {
   await check('CC-008/014-cancellation-cleanup', async () => {
     variant = 'cancel';
     const arrived = new Promise<void>(done => { cancelRequest = done; });
@@ -252,6 +265,37 @@ try {
       const beforeFailure = readFileSync(nativeFile);
       const failure = await run(['--native-config', nativeFile, 'native', '--', 'config', 'use-context', 'missing']);
       assert.notEqual(failure.code, 0); assert.deepEqual(readFileSync(nativeFile), beforeFailure);
+    } finally { writeFileSync(nativeFile, original); environment.KUBERNETES_AXI_READ_ONLY = 'true'; }
+  }));
+  await check('R10-helper-mutations-refused-before-acquisition', async () => local(async () => {
+    const original = readFileSync(nativeFile);
+    const counter = join(directory, 'mutation-helper-count');
+    const helper = structuredClone(nativeSettings);
+    helper.users[0]!.user = { exec: { apiVersion: 'client.authentication.k8s.io/v1', command: process.execPath, args: [join(root, 'test/credential-helper.ts')], interactiveMode: 'Never', provideClusterInfo: true,
+      env: [{ name: 'SYNTHETIC_HELPER_COUNTER', value: counter }] } };
+    writeFileSync(nativeFile, JSON.stringify(helper));
+    writeFileSync(counter, '0');
+    environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    try {
+      for (const trust of [[], ['--trust-exec']]) {
+        for (const args of [
+          ['prepare', '--', 'patch', 'configmap', 'selected', '-n', 'synthetic-b3', '--type=merge', '-p', '{"data":{"value":"after"}}'],
+          ['server-dry-run', '--', 'create', 'configmap', 'helper-created', '--from-literal=value=after'],
+          ['confirm', '00000000-0000-0000-0000-000000000000', '--digest', '0'.repeat(64)],
+        ]) {
+          const result = await run(['--native-config', nativeFile, ...trust, ...args]);
+          assert.equal(result.code, 1, result.stdout + result.stderr);
+          const failure = (decode(result.stdout) as any).error;
+          assert.equal(failure.code, 'AUTH_HELPER_MUTATION_UNAVAILABLE');
+          assert.match(failure.message, /ExecCredential.*principal binding/);
+          assert.equal(requests.length, 0);
+          assert.equal(readFileSync(counter, 'utf8'), '0');
+        }
+      }
+      const identity = await compact('--native-config', nativeFile, '--trust-exec', 'auth', 'whoami');
+      assert.equal(identity.reviews[0].status.userInfo.username, 'synthetic-identity');
+      const access = await compact('--native-config', nativeFile, '--trust-exec', 'auth', 'can-i', 'get', 'pods');
+      assert.equal(access.reviews[0].status.allowed, true);
     } finally { writeFileSync(nativeFile, original); environment.KUBERNETES_AXI_READ_ONLY = 'true'; }
   }));
   await check('CC-012-helper-renewal-redaction', async () => local(async () => {
@@ -420,9 +464,47 @@ try {
     try { writeFileSync(path, Buffer.concat([saved, Buffer.from(' ')])); const result = await run(['get', 'pods']); assert.equal((decode(result.stdout) as any).error.code, 'METADATA_STALE'); assert.equal(requests.length, 0); }
     finally { writeFileSync(path, saved); }
   });
+  }
+  await checkMutations({ run, check, environment, directory, requests });
+  await check('R6-native-prefix-all-operation-paths', async () => local(async () => {
+    variant = 'native-prefix'; environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    const settings = structuredClone(nativeSettings);
+    settings.clusters[0]!.cluster.server += nativePrefix;
+    settings.contexts[0]!.context.namespace = 'synthetic-b3';
+    writeFileSync(nativeFile, JSON.stringify(settings));
+    const before = structuredClone(rootDecoy);
+    const native = async (args: string[]): Promise<any> => {
+      const result = await run(['--native-config', nativeFile, ...args]);
+      assert.equal(result.code, 0, result.stdout + result.stderr); return decode(result.stdout);
+    };
+    try {
+      const saved = await native(['prepare', '--', 'create', 'configmap', 'prefixed', '-n', 'synthetic-b3', '--from-literal=value=selected']);
+      const preview = await native(['preview', saved.request]);
+      const committed = await native(['confirm', saved.request, '--digest', preview.digest]);
+      assert.equal(committed.state, 'complete');
+      await native(['server-dry-run', '--', 'patch', 'configmap', 'prefixed', '-n', 'synthetic-b3', '--type=merge', '-p', '{"data":{"value":"dry-run"}}']);
+      assert.equal((await native(['auth', 'whoami'])).reviews[0].status.userInfo.username, 'synthetic-identity');
+      assert.equal((await native(['auth', 'can-i', 'get', 'configmaps', '-n', 'synthetic-b3'])).reviews[0].status.allowed, true);
+      const patch = await native(['prepare', '--', 'patch', 'configmap', 'prefixed', '-n', 'synthetic-b3', '--type=merge', '-p', '{"data":{"value":"reconciled"}}']);
+      const patchPreview = await native(['preview', patch.request]);
+      const args = ['--native-config', nativeFile, 'confirm', patch.request, '--digest', patchPreview.digest];
+      const uncertain = await run(args);
+      assert.equal(uncertain.code, 1, uncertain.stdout + uncertain.stderr);
+      assert.equal((decode(uncertain.stdout) as any).results[0].observed[0].name, 'prefixed');
+      const start = requests.length;
+      const reconciled = await run(args);
+      assert.equal(reconciled.code, 1, reconciled.stdout + reconciled.stderr);
+      assert.equal((decode(reconciled.stdout) as any).results.at(-1).outcome, 'reconciled_without_retry');
+      assert.deepEqual(requests.slice(start), [nativePrefix + '/api/v1/namespaces/synthetic-b3/configmaps/prefixed']);
+      assert(requests.every(path => path.startsWith(nativePrefix + '/')), JSON.stringify(requests));
+      assert.deepEqual(rootDecoy, before);
+    } finally {
+      writeFileSync(nativeFile, JSON.stringify(nativeSettings)); environment.KUBERNETES_AXI_READ_ONLY = 'true';
+    }
+  }));
 } finally {
   server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
-  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
+  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4', 'B3.1', 'B3.2'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
     packageSha256: createHash('sha256').update(readFileSync(join(directory, packed[0].filename))).digest('hex'),
     kubectlPins: JSON.parse(readFileSync(join(installed, 'kubectl-pins.json'), 'utf8')),
     publicPaths: ['installed compact CLI', 'installed native kubectl route'], network: 'isolated Linux network namespace; loopback only', fixtureHashes: hashes, cases, pending: ['Artium journeys require the separate opt-in verifier', 'native Windows commissioning'] }, null, 2));

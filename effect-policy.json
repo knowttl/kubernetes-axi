@@ -2,7 +2,37 @@
   "approvedLimits": {
     "diff": "Not yet supported (staged): diff requires the later file and external-helper execution capability. Native exit meanings remain 0 for no differences, 1 for differences, and greater than 1 for failure."
   },
-  "flagOverrides": { "debug": { "profile": "clusterWrite" } },
+  "flagOverrides": {
+    "debug": { "profile": "clusterWrite" },
+    "set subject": { "user": "argument" },
+    "create rolebinding": { "user": "argument" },
+    "create clusterrolebinding": { "user": "argument" }
+  },
+  "operationSequences": {
+    "create": ["OP-002", "OP-003", "OP-011", "OP-012"],
+    "run": ["OP-002", "OP-003", "OP-011", "OP-012"],
+    "replace": ["OP-002", "OP-003", "OP-011", "OP-013", "OP-015", "OP-012"],
+    "apply": ["OP-002", "OP-003", "OP-011", "OP-012", "OP-014", "OP-015"],
+    "patch": ["OP-002", "OP-003", "OP-011", "OP-014"],
+    "delete": ["OP-002", "OP-003", "OP-011", "OP-015", "OP-016"],
+    "annotate": ["OP-002", "OP-003", "OP-011", "OP-014"],
+    "label": ["OP-002", "OP-003", "OP-011", "OP-014"],
+    "set": ["OP-002", "OP-003", "OP-011", "OP-014"],
+    "rollout": ["OP-002", "OP-003", "OP-011", "OP-014"],
+    "rollout history": ["OP-002", "OP-003", "OP-011"],
+    "rollout status": ["OP-002", "OP-003", "OP-011"],
+    "scale": ["OP-002", "OP-003", "OP-011", "OP-024"],
+    "autoscale": ["OP-002", "OP-003", "OP-011", "OP-012"],
+    "expose": ["OP-002", "OP-003", "OP-011", "OP-012"],
+    "cordon": ["OP-011", "OP-014"],
+    "uncordon": ["OP-011", "OP-014"],
+    "taint": ["OP-002", "OP-003", "OP-011", "OP-014"],
+    "drain": ["OP-011", "OP-014", "OP-006", "OP-002", "OP-023", "OP-015"],
+    "certificate": ["OP-011", "OP-022"],
+    "auth": ["OP-021"],
+    "auth whoami": ["OP-028"],
+    "auth reconcile": ["OP-002", "OP-003", "OP-011", "OP-012", "OP-013", "OP-014"]
+  },
   "commands": {
     "": "local",
     "alpha": "local",

@@ -52,14 +52,16 @@ const commands = JSON.parse(execFileSync('go', ['run', '-mod=mod', '.'], {
   env: { ...process.env, GOFLAGS: '-p=2' },
 })) as { path: string; aliases: string[] | null; flags: { name: string; short: string; type: string; default: string; noOpt: string; usage: string }[]; use: string; description: string }[];
 
-const policy = JSON.parse(readFileSync(join(root, 'effect-policy.json'), 'utf8')) as { commands: Record<string, string>; flags: Record<string, string>; flagOverrides: Record<string, Record<string, string>>; approvedLimits: Record<string, string> };
+const policy = JSON.parse(readFileSync(join(root, 'effect-policy.json'), 'utf8')) as { commands: Record<string, string>; flags: Record<string, string>; flagOverrides: Record<string, Record<string, string>>; approvedLimits: Record<string, string>; operationSequences: Record<string, string[]> };
 const metadata = {
   version: pins.version, upstream: 'k8s.io/kubectl@v0.32.2',
   moduleLock: createHash('sha256').update(readFileSync(join(directory, 'go.sum'))).digest('hex'),
   commands: commands.map(command => {
     const effect = policy.commands[command.path];
     if (!effect) throw new Error(`Unclassified command: ${command.path}`);
-    return { ...command, aliases: command.aliases ?? [], effect,
+    const sequence = Object.entries(policy.operationSequences).filter(([path]) => command.path === path || command.path.startsWith(`${path} `)).sort(([a], [b]) => b.length - a.length)[0]?.[1];
+    if (['clusterWrite', 'authorization'].includes(effect) && !sequence) throw new Error(`Missing operation sequence: ${command.path}`);
+    return { ...command, aliases: command.aliases ?? [], effect, ...(sequence ? { operations: sequence } : {}),
       ...(policy.approvedLimits[command.path] ? { compatibilityLimit: policy.approvedLimits[command.path] } : {}),
       flags: command.flags.map(flag => {
         if (!policy.flags[flag.name]) throw new Error(`Unclassified flag: ${command.path} --${flag.name}`);
@@ -69,7 +71,7 @@ const metadata = {
 };
 const metadataText = `${JSON.stringify(metadata, null, 2)}\n`;
 const digest = createHash('sha256').update(metadataText).digest('hex');
-const guidance = `Read Kubernetes resources using isolated credentials and pinned kubectl ${pins.version}.\nUse --profile <name> to select an AXI identity.\nUse native -- <kubectl arguments> for native output; native --profile is upstream profiling and is blocked because it writes files.\nReads are bounded; inspect complete, truncated and continue before treating output as complete.\nWrites, execution, transfers, connections, credential overrides and streaming require later capability support and are refused.\n${Object.values(policy.approvedLimits).join('\n')}\nRun kubernetes-axi --help for available compact reads and kubernetes-axi native -- <command> --help for generated upstream flags.\n`;
+const guidance = `Read Kubernetes resources using isolated credentials and pinned kubectl ${pins.version}.\nUse --profile <name> to select an AXI identity.\nUse native -- <kubectl arguments> for native output; native --profile is upstream profiling and is blocked because it writes files.\nReads are bounded; inspect complete, truncated and continue before treating output as complete.\nWrites default off. Explicitly enable KUBERNETES_AXI_READ_ONLY=false, then use prepare -- <mutation>, preview <request-key>, and confirm <request-key> --digest <preview-digest>.\nPreparation reads exact targets; local preview makes no API calls. Confirmation is one-shot and refuses stale or changed targets. Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.\nUse server-dry-run -- <mutation> for explicit API validation without persistence.\nExecution, transfers, connections, credential overrides and streaming require later capability support and are refused.\n${Object.values(policy.approvedLimits).join('\n')}\nRun kubernetes-axi --help for available commands and kubernetes-axi native -- <command> --help for generated upstream flags.\n`;
 const outputs: Record<string, string> = {
   'upstream-modules.sum': readFileSync(join(directory, 'go.sum'), 'utf8'),
   'command-metadata.json': metadataText,
