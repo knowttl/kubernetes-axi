@@ -38,7 +38,13 @@ const validateConfig = ajv.compile<{ version: 1; defaultProfile?: string; profil
 });
 
 export async function profiles(config?: string, diagnostic = false): Promise<{ version: 1; defaultProfile?: string; profiles: Record<string, Profile> }> {
-  const value: unknown = JSON.parse(await readPrivate(configPath(config), false, { diagnostic }));
+  let contents: string;
+  try { contents = await readPrivate(configPath(config), false, { diagnostic }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Failure(config || process.env.KUBERNETES_AXI_CONFIG ? 'CONFIG_NOT_FOUND' : 'AUTH_REQUIRED', config || process.env.KUBERNETES_AXI_CONFIG ? 'The selected config file does not exist; select an existing config file.' : 'Supply a complete environment profile or select a configured profile.');
+    throw error;
+  }
+  const value: unknown = JSON.parse(contents);
   if (!validateConfig(value)) throw new Failure('CONFIG_INVALID', 'Use strict profiles; token and privateKey fields require SecretRefs, never inline values.');
   for (const profile of Object.values(value.profiles)) for (const ref of [profile.token, profile.privateKey]) {
     if (ref && 'file' in ref && (!isAbsolute(ref.file) || (process.platform === 'win32' && !/^[A-Za-z]:\\/.test(ref.file)))) throw new Failure('CONFIG_INVALID', 'SecretRef file paths must be absolute local paths.');
@@ -94,15 +100,7 @@ export async function identity(config?: string, selected?: string, diagnostic = 
     source = 'environment';
     if (!(env.KUBERNETES_AXI_AUTH === 'token' ? env.KUBERNETES_AXI_TOKEN : env.KUBERNETES_AXI_PRIVATE_KEY)) throw new Failure('CONFIG_INVALID', 'Supply every required environment profile field, including its secret.');
   } else {
-    let file;
-    try {
-      file = await profiles(config, diagnostic);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new Failure('AUTH_REQUIRED', 'Supply a complete environment profile or select a configured profile.');
-      }
-      throw error;
-    }
+    const file = await profiles(config, diagnostic);
     const names = Object.keys(file.profiles);
     const chosen = name ?? file.defaultProfile ?? (names.length === 1 ? names[0] : undefined);
     if (!chosen) throw new Failure(names.length ? 'PROFILE_AMBIGUOUS' : 'PROFILE_REQUIRED', 'Select a profile with --profile <name>.');

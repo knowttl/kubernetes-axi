@@ -27,9 +27,14 @@ export async function inspectNative(binary: string, snapshot: string, redactor: 
   } catch { throw new Failure('CONFIG_INVALID', 'The selected native kubeconfig is invalid.'); }
 }
 
-export async function nativeConfig(binary: string, selection: string, context: string | undefined, directory: string, trustExec: boolean, redactor: Redactor, signal: AbortSignal, resourceMutation: boolean): Promise<{ config: object; binding: string; source: string; namespace: string; close: () => Promise<void> }> {
+export async function nativeConfigPaths(selection: string): Promise<string[]> {
   const paths = selection === 'ambient' ? (process.env.KUBECONFIG ? process.env.KUBECONFIG.split(delimiter).filter(Boolean) : [join((await import('node:os')).homedir(), '.kube', 'config')]) : [selection];
   if (!paths.length || paths.some(path => !isAbsolute(path))) throw new Failure('CONFIG_INVALID', 'Select absolute native kubeconfig paths.');
+  return paths;
+}
+
+export async function nativeConfig(binary: string, selection: string, context: string | undefined, directory: string, trustExec: boolean, redactor: Redactor, signal: AbortSignal, resourceMutation: boolean): Promise<{ config: object; binding: string; source: string; namespace: string; diagnostic: object; close: () => Promise<void> }> {
+  const paths = await nativeConfigPaths(selection);
   const merged: Config = { clusters: [], users: [], contexts: [] };
   const origins = new Map<Entry, string>();
   for (const [index, path] of paths.entries()) {
@@ -106,6 +111,7 @@ export async function nativeConfig(binary: string, selection: string, context: s
   }
   return {
     binding,
+    diagnostic: { context: name, namespace: selected.namespace ?? 'default', origin: cluster.server, auth: userEntry.user.exec ? 'exec' : user.token ? 'token' : 'certificate', permissions: 'verified' },
     config: { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'selected', cluster }], users: [{ name: 'selected', user }], contexts: [{ name: name!, context: { cluster: 'selected', user: 'selected', namespace: selected.namespace ?? 'default' } }], 'current-context': name },
     source: `native:${paths.join(delimiter)} context:${name}; ambient exception; helper cache owned by helper`, namespace: selected.namespace ?? 'default', close,
   };

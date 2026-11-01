@@ -317,9 +317,17 @@ export async function checkRemote(context: {
     });
     await check('AC-EXIT-001:remote exit code', async () => {
       fallback = false;
-      const result = await run(await prepare(['exec', 'selected', '-n', 'synthetic-remote', '--', 'fail']));
+      const confirmation = await prepare(['exec', 'selected', '-n', 'synthetic-remote', '--', 'fail']);
+      const result = await run(confirmation);
       assert.equal(result.code, 17, result.stdout + result.stderr);
       assert.equal(result.stdout, '["fail"]'); assert.match(result.stderr, /^diagnostic\n/);
+      const connections = forwarded.length;
+      const replay = await run(confirmation);
+      assert.equal(replay.code, 17, replay.stdout + replay.stderr);
+      const output = decode(replay.stdout) as any;
+      assert.equal(output.replayed, true);
+      assert.equal(output.exitCode, 17);
+      assert.equal(forwarded.length, connections, 'A replay must not execute the command again');
     });
     await check('AC-017:stale target opens no stream', async () => {
       const confirmation = await prepare(['exec', 'selected', '-n', 'synthetic-remote', '--', 'true']);

@@ -48,6 +48,10 @@ let cancelRequest: (() => void) | undefined;
 let override: { path: string; envelope: Envelope | 'malformed' | 'timeout' | 'oversize' } | undefined;
 const nativePrefix = '/k8s/clusters/c1';
 const rootDecoy = { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'prefixed', namespace: 'synthetic-b3', uid: 'root-decoy', resourceVersion: '1' }, data: { value: 'root-decoy' } };
+const rolledOut = {
+  apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'selected', namespace: 'kube-system', generation: 1, resourceVersion: '1' },
+  spec: { replicas: 1 }, status: { observedGeneration: 1, replicas: 1, updatedReplicas: 1, availableReplicas: 1 },
+};
 const server = createServer({ key: readFileSync(join(directory, 'server.key')), cert: readFileSync(join(directory, 'server.crt')) }, (request, response) => {
   requests.push(request.url!);
   if (request.url!.startsWith(nativePrefix + '/')) request.url = request.url!.slice(nativePrefix.length);
@@ -76,6 +80,10 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
     if (override.envelope === 'malformed') { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{broken'); return; }
     if (override.envelope === 'oversize') { response.writeHead(200); response.end('x'.repeat(5 * 1024 * 1024)); return; }
     return send(override.envelope);
+  }
+  if (variant === 'rollout-snapshot') {
+    if (path === '/apis/apps/v1/namespaces/kube-system/deployments/selected') return json(rolledOut);
+    if (path === '/apis/apps/v1/namespaces/kube-system/deployments') return json({ apiVersion: 'apps/v1', kind: 'DeploymentList', metadata: { resourceVersion: '1' }, items: [rolledOut] });
   }
   if (mutationFixture(request, response, variant === 'native-prefix' && request.method === 'PATCH')) return;
   if (path === '/version') return send(fixture('P-001'));
@@ -236,6 +244,148 @@ try {
     assert.deepEqual((await compact('profile', 'list')).profiles, [{ name: 'selected', default: true }]);
     assert.equal((await compact('config', 'path')).path, config);
     assert.equal(requests.length, 0);
+  });
+  await check('live-D1-continuation', async () => {
+    const first = await compact('get', 'pods');
+    assert.equal(first.complete, false);
+    const next = await compact('get', 'pods', '--continue', first.continue);
+    assert.deepEqual(next.pods, []);
+    assert.equal(next.complete, true);
+    assert(requests.some(path => new URL(path, 'https://local').searchParams.get('continue') === first.continue));
+  });
+  await check('live-D1-expired-continuation', async () => {
+    override = { path: '/api/v1/namespaces/kube-system/pods', envelope: { status: 410, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Expired', message: 'The continuation expired', code: 410 } } };
+    const result = await run(['get', 'pods', '--continue=expired']);
+    assert.equal((decode(result.stdout) as any).error.code, 'RESOURCE_EXPIRED');
+  });
+  for (const [args, path, status, reason, code] of [
+    [['logs', 'missing'], '/api/v1/namespaces/kube-system/pods/missing', 404, 'NotFound', 'RESOURCE_NOT_FOUND'],
+    [['logs', 'resource-008', '-c', 'missing'], '/api/v1/namespaces/kube-system/pods/resource-008/log', 400, 'BadRequest', 'BAD_REQUEST'],
+    [['logs', 'resource-008', '--previous'], '/api/v1/namespaces/kube-system/pods/resource-008/log', 400, 'BadRequest', 'BAD_REQUEST'],
+    [['get', 'pods', '-l', 'bad selector!!'], '/api/v1/namespaces/kube-system/pods', 400, 'BadRequest', 'BAD_REQUEST'],
+    [['explain', 'missing'], '', 404, 'NotFound', 'RESOURCE_NOT_FOUND'],
+  ] as const) await check(`live-D2-${args.join(' ')}`, async () => {
+    if (path) override = { path, envelope: { status, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason, message: `${reason}: synthetic read failure`, code: status } } };
+    const result = await run([...args]);
+    const upstream = await run(['native', '--', ...args]);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as any).error.code, code, result.stdout + result.stderr + upstream.stderr);
+    if (path && !args.some(arg => arg === '-c')) assert.equal((decode(result.stdout) as any).error.upstreamStatus, status);
+  });
+  await check('live-D2-invalid-container-namespace-prefix', async () => {
+    const result = await run(['-n', 'kube-system', 'logs', 'resource-008', '-c', 'missing']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as any).error.code, 'BAD_REQUEST', result.stdout);
+    assert.equal(result.stderr, '');
+    assert(!requests.some(path => path.includes('/log')));
+  });
+  await check('live-D2-invalid-container-native-context-prefix', async () => local(async () => {
+    const result = await run(['--native-config', nativeFile, '--context', 'local', 'logs', 'resource-008', '-c', 'missing']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as any).error.code, 'BAD_REQUEST', result.stdout);
+    assert.equal(result.stderr, '');
+    assert(!requests.some(path => path.includes('/log')));
+  }));
+  await check('live-D3-missing-exec-pod', async () => {
+    environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    try {
+      const result = await run(['prepare', '--', 'exec', 'missing', '--', 'true']);
+      assert.equal((decode(result.stdout) as any).error.code, 'RESOURCE_NOT_FOUND');
+    } finally { environment.KUBERNETES_AXI_READ_ONLY = 'true'; }
+  });
+  for (const [status, code] of [[400, 'BAD_REQUEST'], [404, 'RESOURCE_NOT_FOUND']] as const) await check(`live-D2-plain-text-${status}`, async () => {
+    override = { path: '/api/v1/namespaces/kube-system/pods', envelope: { status, headers: { 'Content-Type': 'text/plain' }, body: 'synthetic API rejection' } };
+    const result = await run(['get', 'pods']);
+    const failure = (decode(result.stdout) as any).error;
+    assert.equal(failure.code, code, result.stdout);
+    assert.equal(failure.upstreamStatus, status);
+  });
+  for (const command of ['preview', 'confirm']) await check(`live-D3-missing-request-${command}`, async () => {
+    environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    try {
+      const result = await run([command, '11111111-1111-4111-8111-111111111111', ...(command === 'confirm' ? ['--digest', '0'.repeat(64)] : [])]);
+      assert.equal((decode(result.stdout) as any).error.code, 'REQUEST_NOT_FOUND');
+    } finally { environment.KUBERNETES_AXI_READ_ONLY = 'true'; }
+  });
+  for (const args of [['doctor'], ['auth', 'status']]) await check(`live-D4-native-${args.join(' ')}`, async () => local(async () => {
+    const result = await compact('--native-config', nativeFile, ...args);
+    assert.match(result.source, /^native:/);
+    assert.equal(result.auth, 'token');
+    assert.equal(result.connectivity, 'not checked');
+    assert.equal(requests.length, 0);
+  }));
+  await check('live-D4-native-config-path', async () => local(async () => {
+    assert.deepEqual((await compact('--native-config', nativeFile, 'config', 'path')).paths, [nativeFile]);
+    assert.equal(requests.length, 0);
+  }));
+  await check('live-D4-native-profile-list-hint', async () => local(async () => {
+    const result = await run(['--native-config', nativeFile, 'profile', 'list']);
+    assert.match((decode(result.stdout) as any).error.message, /Omit --native-config/);
+    assert.deepEqual((await compact('--config', config, 'profile', 'list')).profiles, [{ name: 'selected', default: true }]);
+    assert.equal(requests.length, 0);
+  }));
+  await check('live-D4-native-invalid-configuration', async () => local(async () => {
+    const original = readFileSync(nativeFile);
+    try {
+      writeFileSync(nativeFile, JSON.stringify({ ...nativeSettings, 'current-context': 'missing' }));
+      const result = await run(['--native-config', nativeFile, 'doctor']);
+      assert.equal((decode(result.stdout) as any).error.code, 'CONFIG_INVALID');
+      assert.equal(requests.length, 0);
+    } finally { writeFileSync(nativeFile, original); }
+  }));
+  await check('live-D5-rollout-status-explicit-snapshot', async () => {
+    variant = 'rollout-snapshot';
+    assert.match((await compact('rollout', 'status', 'deployment/selected', '--watch=false')).text, /successfully rolled out/);
+    const beforeRefusal = requests.length;
+    const result = await run(['rollout', 'status', 'deployment/selected']);
+    assert.equal((decode(result.stdout) as any).error.code, 'USAGE');
+    assert.equal(requests.length, beforeRefusal);
+  });
+  for (const resource of ['pod/selected', 'pods,events', 'all']) await check(`live-D6-resource-form-${resource}`, async () => {
+    const result = await run(['get', resource]);
+    assert.equal(result.code, 2);
+    assert.match((decode(result.stdout) as any).error.message, /one resource type/);
+    assert.equal(requests.length, 0);
+  });
+  await check('live-D9-version-with-selection', async () => local(async () => {
+    const result = await run(['--native-config', nativeFile, '--version']);
+    assert.equal(result.code, 0, result.stdout);
+    assert.equal(result.stdout.trim(), JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version);
+    assert.equal(requests.length, 0);
+  }));
+  await check('live-D9-unknown-global-flag', async () => {
+    const result = await run(['-o', 'json', 'get', 'pods']);
+    assert.equal(result.code, 2);
+    assert.match((decode(result.stdout) as any).error.message, /Unknown flag -o for kubernetes-axi/);
+  });
+  await check('live-D10-readable-secret-file', async () => {
+    const original = readFileSync(config);
+    const settings = JSON.parse(original.toString());
+    const tokenFile = join(directory, 'readable-token');
+    writeFileSync(tokenFile, 'synthetic-selected-token', { mode: 0o644 });
+    settings.profiles.selected.token = { file: tokenFile };
+    try {
+      writeFileSync(config, JSON.stringify(settings));
+      const result = await run(['doctor']);
+      assert.match((decode(result.stdout) as any).error.message, /inaccessible to group and others/);
+      assert.equal(requests.length, 0);
+    } finally { writeFileSync(config, original); }
+  });
+  await check('live-D12-explicit-missing-config', async () => {
+    const result = await run(['--config', join(directory, 'missing-config'), 'doctor']);
+    assert.equal((decode(result.stdout) as any).error.code, 'CONFIG_NOT_FOUND');
+    assert.equal(requests.length, 0);
+  });
+  for (const [args, code] of [
+    [['create', '-f', join(directory, 'missing-manifest.yaml')], 'INPUT_NOT_FOUND'],
+    [['delete', 'pod'], 'USAGE'],
+    [['scale', 'deployment', 'missing', '--replicas=1'], 'RESOURCE_NOT_FOUND'],
+  ] as const) await check(`live-D12-preparation-${code}`, async () => {
+    environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    try {
+      const result = await run(['prepare', '--', ...args]);
+      assert.equal((decode(result.stdout) as any).error.code, code, result.stdout + result.stderr);
+    } finally { environment.KUBERNETES_AXI_READ_ONLY = 'true'; }
   });
   await check('CC-009-native-selection', async () => local(async () => {
     const saved = environment.KUBECONFIG;

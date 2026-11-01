@@ -48,7 +48,8 @@ Running `kubernetes-axi` with no arguments shows the selected source, isolated c
 ## Commands
 
 `kubernetes-axi --help` lists the compact read surface.
-`--version` prints the package version without loading the command graph.
+A bare `--version` prints the package version without loading the command graph.
+Version probes with selection flags, such as `--native-config <path> --version`, also print the package version without loading credentials or contacting the cluster.
 
 ```text
 kubernetes-axi version
@@ -65,14 +66,22 @@ kubernetes-axi native -- <kubectl arguments>
 
 Global flags: `--config <absolute-path>`, `--profile <name>`, `--namespace <name>` (`-n`), `--help`.
 Inspection commands that need no cluster request: `auth status`, `profile list`, `config path` and `doctor`.
+`doctor` and `auth status` validate local credential configuration and file permissions; `connectivity: not checked` means they do not test server reachability or authentication acceptance.
+With `--native-config`, `doctor` and `auth status` inspect the selected native context, and `config path` lists the native source paths.
+Profiles belong to standard configuration; omit `--native-config` when running `profile list`.
 
 Reads:
 
 - Compact reads discover resource names, aliases, scope and kinds dynamically, including custom resources.
+  Compact `get` accepts one resource type and a separate optional name; use `native -- get` for `TYPE/NAME`, comma lists or `all`.
 - Pods report name, namespace and phase, nodes report readiness, deployments report desired and available replicas, and `top` aggregates CPU and memory.
 - Use `get <resource> [name] -o json` for compact JSON.
   It serializes the same bounded summary as TOON, not the upstream object.
-- `describe`, `explain`, `rollout history` and `rollout status` wrap upstream text with provenance and `complete: false`.
+  `--json` is not supported; text reads such as `logs` and `describe` retain their text envelopes.
+- Pass `get <resource> --continue '<token>'` to fetch the next bounded page, keeping the original namespace and selectors.
+  Each page remains limited to 100 objects; an expired token requires a fresh list.
+- `describe`, `explain`, `rollout history` and `rollout status <resource> --watch=false` wrap upstream text with provenance and `complete: false`.
+  Rollout status requires explicit `--watch=false` in both compact and native modes because the upstream default watches.
 - `logs` preserves text and defaults to 100 trailing lines and 65,536 bytes.
 - `native -- <kubectl arguments>` returns upstream presentation and preserves ordered and repeated flags.
   Its stdout, stderr and exit status are kept after redaction, with the same time and byte bounds.
@@ -244,12 +253,19 @@ Insecure or redirected paths fail before credentials are read.
 ## Output and exit codes
 
 - Output is TOON by default; failures print `error:` with a `code` and `message`, and keep the upstream status where available.
-- Distinct codes cover NotFound, denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits.
+- Distinct codes cover missing resources, denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits.
+  Rejected read arguments use `BAD_REQUEST`, including invalid containers, unavailable previous logs and malformed selectors.
+  Missing execution pods and scale targets use `RESOURCE_NOT_FOUND`.
+  Missing saved preview or confirmation requests use `REQUEST_NOT_FOUND`; permission failures reading them use `REQUEST_UNREADABLE`.
+  An explicitly selected missing standard config file uses `CONFIG_NOT_FOUND`; a missing default config without a complete environment profile uses `AUTH_REQUIRED`.
 - Check `complete`, `truncated` and `continue` before treating a list as complete.
   An oversized server page is truncated with `complete: false`, and a bounded log snapshot never claims completeness.
+  A nonempty `continue` also means the list is incomplete even when `truncated` is false; `truncated` describes local output clipping.
+- Repeated confirmation returns `replayed: true` without repeating the operation.
+  Execution replays include the stored `exitCode` and preserve that process exit status; remote stdout and stderr are not retained for replay.
 - Empty event lists are successful.
-- A failed command exits 1.
-  `native` preserves the upstream exit status.
+- Usage errors exit 2; other failures exit 1.
+  Native commands and confirmed execution preserve the upstream process exit status.
 - The verification entry points exit 0 on pass, 1 on failure and 2 when a prerequisite is pending.
 
 ## Limitations

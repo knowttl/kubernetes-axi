@@ -11,10 +11,9 @@ Confirmation is one-shot and refuses stale or changed targets.
 Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.
 Use server-dry-run -- <mutation> for explicit API validation without persistence.
 Exec/attach and named debug mutations require preparation and confirmation.
-In 0.1.x, managed interactive exec/attach/debug and standalone watch, follow and port-forward requests are refused before effects.
-Credentials come only from existing config/profile and secure credential references; tool-managed sessions never read credential secrets from terminal prompts.
-Bounded noninteractive execution and existing hosted bounded sessions remain supported.
-Streaming redaction and interactive execution redesigns are tracked at https://github.com/knowttl/kubernetes-axi/issues/34 and https://github.com/knowttl/kubernetes-axi/issues/35.
+In 0.1.x, interactive exec/attach/debug and standalone watch, follow and port-forward are refused before effects.
+Supply credentials through config/profiles or secure references.
+Follow support at https://github.com/knowttl/kubernetes-axi/issues/34 and https://github.com/knowttl/kubernetes-axi/issues/35.
 Native Windows support remains pending.
 Token issuance additionally requires KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true, a duration of at most one hour, and --credential-fd <inherited-private-pipe> before confirm.
 Issued tokens are delivered once and never retained.

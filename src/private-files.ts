@@ -26,7 +26,7 @@ export async function readPrivate(path: string, secret: boolean, options: Privat
     const stat = await handle.stat();
     if (stat.dev !== metadata.dev || stat.ino !== metadata.ino || !stat.isFile() ||
         (platform !== 'win32' && (stat.uid !== process.getuid?.() || (stat.mode & (secret ? 0o077 : 0o022)) !== 0))) {
-      throw new Failure('CONFIG_INSECURE', `Credential file must be owned by the current user; use chmod 600 ${path}.`);
+      throw new Failure('CONFIG_INSECURE', `Credential file must be owned by the current user and ${secret ? 'inaccessible to group and others' : 'not writable by group or others'}; use chmod 600 ${path}.`);
     }
     return await handle.readFile('utf8');
   } finally {

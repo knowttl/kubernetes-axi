@@ -134,17 +134,20 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       if (failed.killed) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded request timed out.', 1, { cause: 'timeout' });
       if (format === 'native' && typeof failed.code === 'number') return { native: true, stdout: failed.stdout ?? '', stderr: failed.stderr ?? '', exitCode: failed.code };
       const stderr = failed.stderr ?? '';
-      const reason = /^Error from server \(([^)]+)\):/m.exec(stderr)?.[1]
+      const reason = /^(?:error: )?Error from server \(([^)]+)\):/mi.exec(stderr)?.[1]
         ?? (/^error: You must be logged in to the server \(/m.test(stderr) ? 'Unauthorized' : undefined);
       const errors: [string[], string, number, string][] = [
         [['Unauthorized'], 'AUTH_REQUIRED', 401, 'The selected identity was rejected.'],
         [['Forbidden'], 'ACCESS_DENIED', 403, 'The selected identity cannot perform this read.'],
+        [['BadRequest'], 'BAD_REQUEST', 400, 'The API rejected the read arguments; check the selector, container and requested options.'],
         [['Expired', 'Gone'], 'RESOURCE_EXPIRED', 410, 'The continuation expired; start a new read.'],
         [['Timeout', 'ServerTimeout'], 'UPSTREAM_TIMEOUT', 504, 'The bounded request timed out.'],
         [['NotFound'], args.includes('explain') ? 'SCHEMA_UNAVAILABLE' : args.some(arg => arg.startsWith('--raw=/apis/metrics.k8s.io/')) ? 'API_UNAVAILABLE' : 'RESOURCE_NOT_FOUND', 404, 'The selected resource or API was not found.'],
       ];
       for (const [reasons, code, upstreamStatus, message] of errors) if (reason && reasons.includes(reason)) throw new Failure(code, message, 1, { upstreamStatus, cause: code });
       if (!reason) {
+        if (args.includes('explain') && /^(?:error: )?the server doesn't have a resource type /mi.test(stderr)) throw new Failure('RESOURCE_NOT_FOUND', 'The requested resource type was not found in discovery.');
+        if (invocation.command.path === 'logs' && /^error: container .+ is not valid for pod /m.test(stderr)) throw new Failure('BAD_REQUEST', 'The selected container does not exist in this pod.');
         if (/^(?:error: )?(?:Unable to connect to the server: |net\/http: |context )[^\n]*(?:deadline exceeded|timed out|Timeout)/m.test(stderr)) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded request timed out.', 1, { cause: 'timeout' });
         if (args.includes('explain') && /^error: (?:failed to (?:download|fetch) openapi|error loading schema)/mi.test(stderr)) {
           // Explain loses HTTP failure reasons; a raw read retains the server's status.
@@ -192,6 +195,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       namespace = flags.get('namespace') ?? loaded.namespace;
       source = loaded.source;
       binding = loaded.binding;
+      if (['doctor', 'auth status'].includes(invocation.command.path)) return { source, ...loaded.diagnostic, connectivity: 'not checked' };
       await writePrivate(config, JSON.stringify(loaded.config));
     } else await writePrivate(config, JSON.stringify({
       apiVersion: 'v1', kind: 'Config',
@@ -218,7 +222,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       }
       const result = await invoke(args, 'native') as NativeOutput;
       if (session.argv) {
-        await session.finish(result.exitCode === 0);
+        await session.finish(result.exitCode === 0, result.exitCode);
         return result;
       }
       if (invocation.command.effect === 'authorization') {
@@ -228,7 +232,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       }
       if (result.exitCode !== 0) {
         // Expose a guarded refusal before falling back to the native failure.
-        await session.finish(false);
+        await session.finish(false, result.exitCode, result.stderr);
         if (invocation.native) return result;
         throw new Failure('UPSTREAM_FAILED', 'The operation could not be prepared or validated; check its resource, permissions and arguments.');
       }
@@ -264,12 +268,13 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     }
     if (command === 'api-resources') return { ...provenance, resources: resources.map(resource => ({ name: resource.name, aliases: resource.shortNames ?? [], namespaced: resource.namespaced, kind: resource.kind, verbs: resource.verbs, apiVersion: resource.apiVersion })), complete: true };
     const resource = resources.find(resource => matches(resource, requested));
-    if (!resource) throw new Failure('API_UNAVAILABLE', 'Discovery does not advertise the requested resource.');
+    if (!resource) throw new Failure('API_UNAVAILABLE', command.startsWith('top ') ? 'The metrics.k8s.io API does not advertise the requested metrics resource.' : 'Discovery does not advertise the requested resource.');
     const name = command.startsWith('top ') ? invocation.positionals[0] : invocation.positionals[1];
     if (name && !/^[a-z0-9][a-z0-9.-]*$/.test(name)) throw new Failure('USAGE', 'Supply one Kubernetes resource name.', 2);
     const route = `${resource.prefix}${resource.namespaced && !all ? `/namespaces/${namespace}` : ''}/${resource.name}${name ? `/${name}` : ''}`;
     const query = new URLSearchParams();
     if (!name && !command.startsWith('top ')) query.set('limit', '100');
+    if (flags.has('continue')) query.set('continue', flags.get('continue')!);
     for (const [flag, parameter] of [['selector', 'labelSelector'], ['field-selector', 'fieldSelector']] as const) if (flags.has(flag)) query.set(parameter, flags.get(flag)!);
     const body = await raw(`${route}${query.size ? `?${query}` : ''}`);
     let items: ObjectEnvelope[];
