@@ -97,9 +97,19 @@ B1.3 and `gate 1` report native Windows as pending and exit 2 after the Linux jo
 The `release` entry point also remains pending because later stages are unimplemented.
 Pending never counts as pass.
 The B1.1 verifier reports missing npm or OpenSSL as pending and exits 2; integrity mismatches remain failures and exit 1.
-The B2 and B3 task commands run the combined B2/B3 harness and private-file checks, which require Linux network namespaces, npm, OpenSSL, prlimit and cached npm dependencies; missing prerequisites fail the run.
+The B2.1 through B2.4 and B3.1 through B3.4 task commands run the combined B2/B3 harness and private-file checks, which require Linux network namespaces, npm, OpenSSL, prlimit and cached npm dependencies; missing prerequisites fail the run.
 The private-file checks interrupt a real write with a file-size limit and verify preservation of the prior file and removal of the temporary file.
 Injected Windows ACL checks exercise the platform branch; native Windows commissioning remains pending.
+
+```text
+python3 scripts/verify.py task B3.3 --mode offline --pack evidence
+python3 scripts/verify.py task B3.4 --mode offline --pack evidence --artium <frozen-checkout>
+```
+
+B3.4 additionally requires a frozen Artium checkout for real encrypted credential-store observation and a verified `strace` binary supplied through `KUBERNETES_AXI_TEST_WRITE_OBSERVER`, with its SHA-256 in `KUBERNETES_AXI_TEST_WRITE_OBSERVER_SHA256`.
+Observer output stays in memory on a separate private pipe.
+Missing the observer or Artium checkout makes the B3.4 entry point report pending and exit 2.
+The standalone harness can exercise private delivery without these prerequisites, but cannot establish B3.4 memory-only custody.
 
 ```text
 python3 scripts/verify.py task B1.1 --mode offline --pack evidence --negative-control
@@ -141,10 +151,11 @@ The generator uses a temporary Go adapter to inspect the upstream types; no thir
 Unknown flags are rejected before effects.
 Compact reads reject unsupported flags explicitly; the native route preserves repeated flags and the native `--` boundary.
 AXI `--profile` selects an identity before `native --`; upstream `--profile` after that delimiter is classified as profiling output and refused.
-Credential, server, impersonation, TLS-bypass, raw-route and streaming options are refused by this milestone's policy.
+Credential overrides, server overrides, impersonation and TLS-bypass options are refused by this milestone's policy.
 Filesystem options are refused except for mutation inputs described below and explicit native configuration operations.
 Cluster mutations use the protected prepare, preview and confirm workflow below.
-Arbitrary execution, transfers and connections remain staged for their later capabilities.
+For supported raw routes, execution and token acquisition, see [Bounded execution and private token acquisition](#bounded-execution-and-private-token-acquisition).
+Transfers, proxy connections and interactive sessions remain unavailable.
 Explicit local native configuration edits are available through the native identity adapter described below.
 Diff has an approved staged compatibility limit: `NOT_YET_SUPPORTED_STAGED`, before reading a manifest or invoking a helper.
 When its later file/helper capability is implemented, native diff must retain exit 0 for no differences, 1 for differences and greater than 1 for failure.
@@ -228,8 +239,8 @@ The child receives a temporary loopback capability instead of the upstream crede
 
 `preview` reads only the saved snapshot and performs no API requests or helper execution.
 Its digest covers the cluster and identity binding, namespace, selected objects, original request bytes, and the exact normalized bytes to be forwarded.
-Secret payloads, last-applied configuration and configured credential values are redacted from the public preview.
-The private saved request retains original mutation payloads, including Secret data; public preview redaction does not remove them from disk.
+Secret payloads, last-applied configuration and configured credential values, including values in execution arguments and encoded stream queries, are redacted from the saved public preview.
+The private saved request retains original mutation payloads, including Secret data, and original execution arguments and queries for exact confirmation; public preview redaction does not remove them from disk.
 
 `confirm` requires the exact digest and original identity, rechecks every captured target, and atomically claims the request before writing.
 Object changes use UID/resourceVersion preconditions.
@@ -265,8 +276,7 @@ Typed requests are decoded using protobufjs 7.6.6 and generated schemas and JSON
 Unknown protobuf types are refused before forwarding.
 Regenerate schemas with `node scripts/generate-protobuf.ts`; the pinned Go module cache must contain the source files.
 The configured test verifies both generated metadata and schemas without outbound networking or an Artium fixture.
-Run `python3 scripts/verify.py task B3.1 --mode offline --pack evidence` or `B3.2` for the combined offline journeys.
-Artium journeys remain opt-in via `--artium <frozen-checkout>` and require an exact matching package pin.
+See [Build and verification](#build-and-verification) for the combined offline journeys and Artium prerequisites.
 Native Windows mutation commissioning remains pending.
 The frozen Artium fixture owns hosted profile injection and role policy; it is local integration evidence, not a claim of released Artium support.
 
@@ -304,9 +314,7 @@ The recipient owns subsequent use after explicit delivery.
 Request files contain the approved TokenRequest specification and outcome, never the issued token.
 Hosted admission still denies ungranted native scale, exec and token commands before forwarding.
 
-To observe native writes throughout issuance and delivery, supply a verified `strace` binary using `KUBERNETES_AXI_TEST_WRITE_OBSERVER` and its SHA-256 using `KUBERNETES_AXI_TEST_WRITE_OBSERVER_SHA256`.
-Observer output stays in memory on a separate private pipe.
-Absent observation is pending evidence and cannot establish B3.4 memory-only custody.
+See [Build and verification](#build-and-verification) for credential-custody observation requirements.
 
 ## Explicit native identity
 
@@ -329,7 +337,7 @@ All native identities, including helpers, require explicit CA trust.
 Helpers require explicit `--trust-exec` after reviewing the selected configuration.
 A tool-owned shim brokers each ExecCredential acquisition or renewal over a private local socket.
 The parent registers acquired credentials and encoded forms before returning them to kubectl.
-Redaction covers literal, JavaScript and Go JSON-escaped, URI-encoded and base64 forms, including nested JSON escaping.
+Redaction covers literal, JavaScript and Go JSON-escaped, URI-encoded, URL form-encoded and base64 forms, including nested JSON escaping.
 Raw helper output and failures never reach public streams.
 The helper receives its native API version, cluster information and noninteractive execution information.
 Its existing environment and cache remain helper-owned under the local ambient exception; credentials are never imported into AXI storage.
