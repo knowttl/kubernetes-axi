@@ -21,7 +21,7 @@ kubernetes-axi --version
 kubernetes-axi --help
 ```
 
-Without a usable credential configuration, commands fail with a structured error such as:
+Without a usable credential configuration, cluster commands fail with a structured error such as:
 
 ```text
 error:
@@ -121,7 +121,7 @@ Generated grammar:
   The token is delivered once and never stored.
 - Credential overrides, server overrides, impersonation, TLS bypass and generic proxy listeners are refused.
   Unknown flags are rejected before any effect.
-- In 0.1.x, editors, plugins and external render/diff helpers are refused before effects, including when writes are enabled.
+- In 0.1.x, execution of editors, plugins and external render/diff helpers is refused before effects, including when writes are enabled.
   Run those tools outside the CLI, then submit their manifest or patch through preparation, preview and confirmation.
   An opt-in two-stage local execution design is tracked in [issue 30](https://github.com/knowttl/kubernetes-axi/issues/30).
 - Raw reads are classified by their API route, including nested proxy routes and query-based watches.
@@ -150,7 +150,8 @@ Existing hosted bounded/noninteractive byte sessions, watches, followed logs and
 Helper-backed mutations and execution remain refused.
 Native Windows support remains pending.
 
-Native completion, options, plugin discovery and `version --client=true` run offline without credentials.
+Native `completion`, `options`, `plugin list` and `version --client=true` run offline without credentials.
+`plugin list` discovers programs on PATH without executing them.
 
 ```sh
 kubernetes-axi --profile <name> prepare -- exec <pod> -n <namespace> -- true
@@ -255,8 +256,8 @@ Insecure or redirected paths fail before credentials are read.
 
 - Native Windows execution, ACL conformance and helper channels are pending; Linux is the verified platform.
 - Live cluster commissioning and complete command coverage are pending.
-- In 0.1.x, local editors, plugins and external render/diff helpers are refused before effects; use externally produced manifests or patches with the preview and confirmation workflow.
-- Standalone mode has no direct file transfer, generic proxy listener, managed interactive exec/attach/debug, watch/follow streams or port forwarding.
+- For local editor, plugin and external helper restrictions, see [Safety](#safety).
+- Standalone mode has no direct file transfer or generic proxy listener; execution and streaming restrictions are described in the [0.1.x capability boundary](#bounded-execution-and-the-01x-capability-boundary).
 - Hosted transfers, byte sessions and port forwarding are verified only against a frozen local Artium fixture, not a released Artium.
 - Terminal-bound helpers and legacy auth-provider plugins fail explicitly.
 - Supported server minors are listed in [kubectl-pins.json](kubectl-pins.json).
@@ -279,8 +280,10 @@ The verifier uses Python 3; use `python3` on Linux hosts without a `python` alia
 B5.1 verifies the reduced 0.1.x boundary: interactive and standalone-streaming requests refuse before effects, while bounded execution and offline native client/config commands remain available.
 B5.2 runs cumulative package journeys, strict types and generated-contract checks.
 Artium hosted proof is optional for the 0.1.x package gate.
-Add `--artium <frozen-checkout>` to either B5 command for optional hosted journeys and the selected frozen Artium aggregate.
-When `--artium` is selected, private Artium hygiene and container acceptance require separately recorded owner evidence; missing checks report pending.
+Add `--artium <frozen-checkout>` to either B5 command to opt in to hosted verification.
+B5.2 additionally runs the selected frozen Artium aggregate.
+For B5.2 with `--artium`, private hygiene runs when `ARTIUM_AXI_HYGIENE_DENY_LIST_FILE` supplies the owner's external deny list; otherwise it reports pending.
+Container acceptance requires separate owner evidence and remains pending in the verifier.
 
 - For offline builds, place the official kubectl binaries named in [kubectl-pins.json](kubectl-pins.json) in `vendor/` before installing; the build checks their SHA256 digests and otherwise downloads only from the pinned official URL.
 - `npm test` runs inside a loopback-only Linux namespace, so outbound network access is denied.

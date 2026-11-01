@@ -503,7 +503,7 @@ try {
     const files = readdirSync(directory);
     const command = [process.execPath, cli, ...args].map(arg => `'${arg.replaceAll("'", "'\\''")}'`).join(' ');
     const binary = mode === 'PTY' ? 'script' : process.execPath;
-    const argv = mode === 'PTY' ? ['--quiet', '--return', '--command', `exec ${command}`, '/dev/null'] : [cli, ...args];
+    const argv = mode === 'PTY' ? ['--quiet', '--return', '--command', `stty rows 24 cols 80 && exec ${command}`, '/dev/null'] : [cli, ...args];
     await assert.rejects(execute(binary, argv, { env: { ...environment, KUBERNETES_AXI_READ_ONLY: 'false' }, timeout: 20000 }), (error: unknown) => {
       const result = error as { code: number; stdout: string; stderr: string };
       assert.equal(result.code, code, result.stdout + result.stderr);
