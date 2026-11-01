@@ -29,12 +29,13 @@ Inspect `complete`, `truncated` and `continue` before treating a result as compl
 An oversized server page is truncated with `complete: false`.
 Named reads retain NotFound failures; denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits have distinct error codes.
 Errors retain the upstream status where available.
-Each operation has a 15-second budget, at most 64 child invocations, a 5-second default request timeout, a 10-second child limit and a 4 MiB retained-output limit.
+Each standalone read has a 15-second budget, at most 64 child invocations, a 5-second default request timeout, a 10-second child limit and a 4 MiB retained-output limit.
 Logs preserve text and default to 100 trailing lines and 65,536 bytes; a bounded log snapshot never claims completeness.
 Use `get <resource> [name] -o json` for compact JSON, or the native route for upstream presentation and ordered arguments.
 Compact JSON serializes the same bounded summary and provenance as TOON; it does not return the upstream Kubernetes object.
 Compact `describe`, `explain`, `rollout history` and `rollout status` wrap upstream text with provenance and `complete: false`; use the native route for unwrapped text.
-Native stdout, stderr and exit status are preserved after redaction, with the same time and byte bounds.
+Standalone native stdout, stderr and exit status are preserved after redaction, with the same time and byte bounds.
+See [Hosted files and bounded sessions](#hosted-files-and-bounded-sessions) for the separate hosted contract.
 Native `kubectl get pods` consumes continuation tokens even when chunking is disabled, so the bounded read retains the original page state explicitly.
 
 ## Install
@@ -84,9 +85,9 @@ The verification report records individual cases, native OS, package digest, fix
 Without `--artium`, the configured test skips the hosted journeys with an explicit reason.
 Supply a built, frozen Artium checkout with its copied dependencies, staged package and fresh admission inventory to opt in.
 Its Kubernetes tarball must match the package being verified exactly.
-The hosted journey starts the real server and runner, logs in with the real CLI, and replays the retained version and pod responses through the installed package.
+The B1.2 hosted journey starts the real server and runner, logs in with the real CLI, and replays the retained version and pod responses through the installed package.
 It tests a poisoned developer kubeconfig, broader upstream access, host role denial, identity override refusals and cancellation cleanup.
-Artium's role grant covers the Kubernetes tool; this evidence does not claim operation-specific role grants.
+The B1.2 role-denial evidence covers the Kubernetes tool grant; see [Hosted files and bounded sessions](#hosted-files-and-bounded-sessions) for operation-specific session authorization.
 
 ```text
 python3 scripts/verify.py task B1.2 --mode offline --pack evidence --artium <frozen-checkout>
@@ -289,7 +290,8 @@ Preparation freezes the named pod, container and exact command argument sequence
 Confirmation checks the selected identity, cluster and pod snapshot before invoking pinned kubectl.
 The private gateway supports WebSocket GET and kubectl's SPDY fallback, preserves separate stdout/stderr, and returns the remote exit code.
 Both operations require `KUBERNETES_AXI_READ_ONLY=false`.
-TTY and stdin requests return `LOCAL_TERMINAL_REQUIRED`; interactive workflows require trusted kubectl in a local terminal.
+Standalone TTY and stdin requests return `LOCAL_TERMINAL_REQUIRED`; interactive workflows require trusted kubectl in a local terminal.
+For hosted input, see [Hosted files and bounded sessions](#hosted-files-and-bounded-sessions).
 `debug --attach=false` prepares its named create or ephemeral-container patch through the mutation policy.
 Helper-backed mutations and execution remain refused.
 
@@ -302,7 +304,8 @@ kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>
 Raw reads are classified by their API route, including nested proxy routes and query-based watches.
 Raw execution, token issuance and proxy connections cannot bypass their explicit capability boundaries.
 Raw resource mutations still require preparation and confirmation.
-Local rendering and plugin execution are explicitly classified and refused, including during preparation.
+Standalone local rendering and plugin execution are explicitly classified and refused, including during preparation.
+For hosted builtin Kustomize inputs, see [Hosted files and bounded sessions](#hosted-files-and-bounded-sessions).
 
 Native `create token` is an explicit acquisition flow.
 Enable `KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true` in addition to writes and prepare `create token <service-account> --duration=10m -n <namespace>`.
