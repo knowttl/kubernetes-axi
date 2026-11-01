@@ -31,7 +31,8 @@
     "certificate": ["OP-011", "OP-022"],
     "auth": ["OP-021"],
     "auth whoami": ["OP-028"],
-    "auth reconcile": ["OP-002", "OP-003", "OP-011", "OP-012", "OP-013", "OP-014"]
+    "auth reconcile": ["OP-002", "OP-003", "OP-011", "OP-012", "OP-013", "OP-014"],
+    "debug": ["OP-011", "OP-012", "OP-014", "OP-018"]
   },
   "commands": {
     "": "local",
@@ -98,7 +99,7 @@
     "create service nodeport": "clusterWrite",
     "create serviceaccount": "clusterWrite",
     "create token": "credentials",
-    "debug": "execution",
+    "debug": "clusterWrite",
     "delete": "clusterWrite",
     "describe": "read",
     "diff": "execution",

@@ -21202,7 +21202,13 @@
       ],
       "use": "debug (POD | TYPE[[.VERSION].GROUP]/NAME) [ -- COMMAND [args...] ]",
       "description": "Create debugging sessions for troubleshooting workloads and nodes",
-      "effect": "execution"
+      "effect": "clusterWrite",
+      "operations": [
+        "OP-011",
+        "OP-012",
+        "OP-014",
+        "OP-018"
+      ]
     },
     {
       "path": "delete",
