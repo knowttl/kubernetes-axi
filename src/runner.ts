@@ -24,6 +24,10 @@ const validVersion = ajv.compile<{ major: string; minor: string; gitVersion: str
   type: 'object', required: ['major', 'minor', 'gitVersion'],
   properties: { major: { const: '1' }, minor: { type: 'string', pattern: '^[0-9]+\\+?$' }, gitVersion: { type: 'string' } },
 });
+function compatibleVersion(value: unknown): asserts value is { major: string; minor: string; gitVersion: string } {
+  if (!validVersion(value)) throw new Failure('UPSTREAM_INVALID', 'The server version response is invalid.');
+  if (!pins.supportedServerMinors.includes(Number.parseInt(value.minor, 10))) throw new Failure('BINARY_INCOMPATIBLE', 'Server version is outside the recorded kubectl skew matrix.');
+}
 interface Resource { name: string; singularName: string; namespaced: boolean; kind: string; verbs: string[]; shortNames?: string[]; prefix: string; apiVersion: string }
 interface ObjectEnvelope {
   apiVersion?: string; kind?: string;
@@ -181,7 +185,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       users: [{ name: 'selected', user }], contexts: [{ name: 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': 'selected',
     }));
     if (invocation.workflow || invocation.command.effect === 'authorization') {
-      const session = await mutationSession(config, invocation, namespace, redactor, cancellation.signal, binding);
+      const session = await mutationSession(config, invocation, namespace, redactor, cancellation.signal, compatibleVersion, binding);
       const closeIdentity = close;
       close = async () => { await session.close(); await closeIdentity(); };
       if (invocation.workflow?.kind === 'confirm') return await session.finish();
@@ -209,8 +213,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     const client = await invoke(['version', '--client=true', '-o', 'json']) as { clientVersion?: { gitVersion?: string } };
     if (client.clientVersion?.gitVersion !== pins.version) throw new Failure('BINARY_VERSION', 'Restore the recorded managed kubectl version.');
     const version = await raw('/version');
-    if (!validVersion(version)) throw new Failure('UPSTREAM_INVALID', 'The server version response is invalid.');
-    if (!pins.supportedServerMinors.includes(Number.parseInt(version.minor, 10))) throw new Failure('BINARY_INCOMPATIBLE', 'Server version is outside the recorded kubectl skew matrix.');
+    compatibleVersion(version);
     const provenance = { source, kubectlVersion: pins.version, kubectlSha256: digest };
     if (invocation.native) return await invoke(invocation.argv, 'native') as NativeOutput;
     const command = invocation.command.path;

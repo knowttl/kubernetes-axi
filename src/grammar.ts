@@ -5,7 +5,7 @@ import { Failure } from './errors.js';
 import { metadataSha256 } from './metadata-pin.js';
 
 export interface Flag { name: string; short: string; type: string; default: string; noOpt: string; usage: string; effect: string }
-export interface Command { path: string; aliases: string[]; flags: Flag[]; use: string; description: string; effect: string; compatibilityLimit?: string }
+export interface Command { path: string; aliases: string[]; flags: Flag[]; use: string; description: string; effect: string; operations?: string[]; compatibilityLimit?: string }
 const bytes = await readFile(new URL('../command-metadata.json', import.meta.url));
 export const metadata = JSON.parse(bytes.toString()) as { version: string; commands: Command[] };
 
@@ -34,6 +34,10 @@ export function parse(args: string[]): Invocation {
   let workflow: Invocation['workflow'];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
+    if (argv.length === 0 && ['prepare', 'preview', 'confirm', 'server-dry-run'].includes(arg) && args[index + 1] === '--help' && index + 2 === args.length) {
+      const uses: Record<string, string> = { prepare: 'prepare -- <Kubernetes mutation>', preview: 'preview <request-key>', confirm: 'confirm <request-key> --digest <preview-digest>', 'server-dry-run': 'server-dry-run -- <Kubernetes mutation>' };
+      return { ...own, native: false, command: { path: arg, aliases: [], flags: [], use: uses[arg]!, description: 'Prepare frozen targets, preview them offline, confirm their exact digest, or explicitly request server dry run.', effect: arg === 'preview' ? 'localRead' : 'clusterWrite' }, argv: [], positionals: [], flags: new Map(), help: true, home: false };
+    }
     if (argv.length === 0 && ['prepare', 'server-dry-run'].includes(arg)) {
       if (args[index + 1] !== '--') throw new Failure('USAGE', `Use ${arg} -- <Kubernetes command and arguments>.`, 2);
       workflow = { kind: arg as 'prepare' | 'server-dry-run' };
@@ -164,8 +168,11 @@ export function commandHelp(command: Command): object {
   return {
     command: command.path || 'kubernetes-axi', description: command.description,
     usage: command.use, effect: command.effect,
+    ...(command.operations ? { operations: command.operations } : {}),
     ...(command.compatibilityLimit ? { compatibilityLimit: command.compatibilityLimit } : {}),
     flags: command.flags.map(flag => ({ name: `--${flag.name}`, short: flag.short ? `-${flag.short}` : '', type: flag.type, default: flag.default })),
-    examples: ['kubernetes-axi --profile <name> get pods -n <namespace>', 'kubernetes-axi --profile <name> native -- get pods -n <namespace> -o json'],
+    examples: ['prepare', 'preview', 'confirm', 'server-dry-run'].includes(command.path) ?
+      ['kubernetes-axi --profile <name> prepare -- patch deployment <name> --type=merge -p \'{"spec":{"replicas":3}}\'', 'kubernetes-axi --profile <name> preview <request-key>', 'kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>'] :
+      ['kubernetes-axi --profile <name> get pods -n <namespace>', 'kubernetes-axi --profile <name> native -- get pods -n <namespace> -o json'],
   };
 }

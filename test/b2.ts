@@ -429,7 +429,7 @@ try {
   await checkMutations({ run, check, environment, directory, requests });
 } finally {
   server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
-  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
+  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4', 'B3.1', 'B3.2'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
     packageSha256: createHash('sha256').update(readFileSync(join(directory, packed[0].filename))).digest('hex'),
     kubectlPins: JSON.parse(readFileSync(join(installed, 'kubectl-pins.json'), 'utf8')),
     publicPaths: ['installed compact CLI', 'installed native kubectl route'], network: 'isolated Linux network namespace; loopback only', fixtureHashes: hashes, cases, pending: ['Artium journeys require the separate opt-in verifier', 'native Windows commissioning'] }, null, 2));

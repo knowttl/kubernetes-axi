@@ -14,7 +14,7 @@ const widgets = `/apis/synthetic.example/v1beta1/namespaces/${ns}/widgets`;
 const resource = (name: string, kind: string, namespaced: boolean, shortNames: string[] = []) => ({ name, singularName: kind.toLowerCase(), kind, namespaced, shortNames, verbs: ['get', 'list', 'create', 'update', 'patch', 'delete', 'deletecollection'] });
 const discovery = (groupVersion: string, resources: object[]) => ({ kind: 'APIResourceList', apiVersion: 'v1', groupVersion, resources });
 const objects = new Map<string, ObjectBody>();
-const effects: { method: string; path: string; body: any; dryRun: boolean }[] = [];
+const effects: { method: string; path: string; body: any; wire: string; dryRun: boolean }[] = [];
 let mode = '';
 let revision = 1;
 const doc = (apiVersion: string, kind: string, name: string, namespace?: string, extra: object = {}): ObjectBody => ({ apiVersion, kind,
@@ -64,8 +64,8 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
   const send = (body: object, status = 200): void => { response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body)); };
   const status = (reason: string, code: number): void => send({ kind: 'Status', apiVersion: 'v1', status: 'Failure', reason, message: reason, code }, code);
   const routes: Record<string, object> = {
-    '/api/v1': discovery('v1', [resource('pods', 'Pod', true, ['po']), resource('pods/eviction', 'Eviction', true), resource('namespaces', 'Namespace', false, ['ns']), resource('nodes', 'Node', false, ['no']), resource('events', 'Event', true, ['ev']), resource('configmaps', 'ConfigMap', true, ['cm']), resource('services', 'Service', true, ['svc']), resource('serviceaccounts', 'ServiceAccount', true, ['sa'])]),
-    '/apis/apps/v1': discovery('apps/v1', [resource('deployments', 'Deployment', true, ['deploy']), resource('deployments/scale', 'Scale', true), resource('replicasets', 'ReplicaSet', true, ['rs']), resource('daemonsets', 'DaemonSet', true, ['ds']), resource('statefulsets', 'StatefulSet', true, ['sts'])]),
+    '/api/v1': discovery('v1', [resource('pods', 'Pod', true, ['po']), { ...resource('pods/eviction', 'Eviction', true), group: 'policy', version: 'v1' }, resource('namespaces', 'Namespace', false, ['ns']), resource('nodes', 'Node', false, ['no']), resource('events', 'Event', true, ['ev']), resource('configmaps', 'ConfigMap', true, ['cm']), resource('services', 'Service', true, ['svc']), resource('serviceaccounts', 'ServiceAccount', true, ['sa'])]),
+    '/apis/apps/v1': discovery('apps/v1', [resource('deployments', 'Deployment', true, ['deploy']), { ...resource('deployments/scale', 'Scale', true), group: 'autoscaling', version: 'v1' }, resource('replicasets', 'ReplicaSet', true, ['rs']), resource('daemonsets', 'DaemonSet', true, ['ds']), resource('statefulsets', 'StatefulSet', true, ['sts'])]),
     '/apis/policy/v1': discovery('policy/v1', [resource('poddisruptionbudgets', 'PodDisruptionBudget', true, ['pdb'])]),
     '/apis/autoscaling/v2': discovery('autoscaling/v2', [resource('horizontalpodautoscalers', 'HorizontalPodAutoscaler', true, ['hpa'])]),
     '/apis/autoscaling/v1': discovery('autoscaling/v1', [resource('horizontalpodautoscalers', 'HorizontalPodAutoscaler', true, ['hpa'])]),
@@ -78,7 +78,7 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
     void (async () => {
       const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const body = JSON.parse(Buffer.concat(chunks).toString());
-      effects.push({ method: request.method!, path, body, dryRun: false });
+      effects.push({ method: request.method!, path, body, wire: Buffer.concat(chunks).toString(), dryRun: false });
       if (mode === 'review-denied') return status('Forbidden', 403);
       send({ ...body, status: review[2] === 'selfsubjectreviews' ? { userInfo: { username: 'synthetic-identity', groups: ['synthetic'] } } : review[2] === 'selfsubjectrulesreviews' ? { resourceRules: [], nonResourceRules: [], incomplete: true, evaluationError: 'synthetic partial rules' } : { allowed: mode !== 'access-denied', denied: mode === 'access-denied', reason: 'synthetic explicit review' } });
     })(); return true;
@@ -106,10 +106,11 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
       if (field?.startsWith('spec.nodeName=')) items = items.filter(item => item.spec?.nodeName === field.slice('spec.nodeName='.length));
       return send({ kind: listing[1] + 'List', apiVersion: listing[0], metadata: { resourceVersion: 'list-version' }, items });
     }
-    const dryRun = url.searchParams.get('dryRun') === 'All';
-    effects.push({ method: request.method!, path, body, dryRun });
+    const dryRun = url.searchParams.get('dryRun') === 'All' || body.dryRun?.includes('All') || body.deleteOptions?.dryRun?.includes('All') || false;
+    effects.push({ method: request.method!, path, body, wire: Buffer.concat(chunks).toString(), dryRun });
     if (mode === 'conflict') return status('Conflict', 409);
-    if (path.endsWith('/eviction') && (mode === 'deny-eviction' || mode === 'partial-drain' && existing?.metadata.name === 'pod-b')) return status('Forbidden', 403);
+    if (mode === 'partial-bulk' && request.method === 'DELETE' && effects.filter(effect => effect.method === 'DELETE').length === 2) return status('Forbidden', 403);
+    if (path.endsWith('/eviction') && (mode === 'deny-eviction' || mode === 'partial-drain' && effects.filter(effect => effect.path.endsWith('/eviction')).length === 2)) return status('Forbidden', 403);
     if (request.method === 'DELETE' && !existing && url.searchParams.has('fieldSelector')) {
       const name = url.searchParams.get('fieldSelector')!.slice('metadata.name='.length);
       const object = objects.get(`${path}/${name}`);
@@ -121,7 +122,7 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
       const preconditions = path.endsWith('/eviction') ? body.deleteOptions?.preconditions : body.preconditions;
       if (!existing) return status('NotFound', 404);
       if (preconditions && (preconditions.uid !== existing.metadata.uid || preconditions.resourceVersion !== existing.metadata.resourceVersion)) return status('Conflict', 409);
-      if (!dryRun) objects.delete(target);
+      if (!dryRun && mode !== 'eviction-pending') objects.delete(target);
       return send({ kind: 'Status', apiVersion: 'v1', status: 'Success' });
     }
     let changed: ObjectBody;
@@ -187,6 +188,10 @@ export async function checkMutations({ run, check, environment, directory, reque
     assert.equal(statSync(requestDir).mode & 0o777, 0o700); assert.equal(statSync(join(requestDir, 'request.json')).mode & 0o777, 0o600);
     const committed = await confirm({ ...saved, digest: preview.digest });
     assert.equal(committed.state, 'complete'); assert.equal(objects.get(`${core}/configmaps/created`)!.data.value, 'after');
+    const frozen = JSON.parse(readFileSync(join(requestDir, 'request.json'), 'utf8'));
+    assert.equal(effects[0]!.wire, frozen.plan.changes[0].wire);
+    const journal = JSON.parse(readFileSync(join(requestDir, 'outcome.json'), 'utf8'));
+    assert.equal(journal.results[0].outcome, 'committed'); assert.equal(journal.results[0].upstreamStatus, 201);
     await confirm({ ...saved, digest: preview.digest }); assert.equal(effects.length, 1);
   });
   await test('B3-preview-binding', async () => {
@@ -263,6 +268,15 @@ export async function checkMutations({ run, check, environment, directory, reque
     assert(!objects.has(`${core}/configmaps/selected`)); assert(!objects.has(`${core}/configmaps/decoy`));
     assert(effects.every(item => item.path === `${core}/configmaps` && item.body.preconditions.uid));
   });
+  await test('AC-016-partial-bulk-failure', async () => {
+    const saved = await approved(['delete', 'configmaps', '-n', ns, '--all']);
+    mode = 'partial-bulk';
+    const result = await run(['confirm', saved.request, '--digest', saved.digest]);
+    assert.equal(result.code, 1, result.stdout);
+    const report = decode(result.stdout) as any;
+    assert.equal(report.results[0].outcome, 'committed'); assert.equal(report.results[1].upstreamStatus, 403);
+    assert.equal([...objects.keys()].filter(path => path.startsWith(`${core}/configmaps/`)).length, 1);
+  });
   await test('AC-027-server-dry-run', async () => {
     const before = structuredClone(objects.get(`${core}/configmaps/selected`));
     const output = await run(['server-dry-run', '--', 'patch', 'cm', 'selected', '-n', ns, '--type=merge', '-p', '{"data":{"value":"after"}}']);
@@ -274,6 +288,11 @@ export async function checkMutations({ run, check, environment, directory, reque
     assert.equal(objects.get(`${apps}/deployments/selected`)!.spec.replicas, 4); assert.deepEqual(objects.get(`${apps}/deployments/decoy`), decoy);
     const conflict = await run(['prepare', '--', 'scale', 'deployment/selected', '-n', ns, '--replicas=8', '--current-replicas=2']);
     assert.notEqual(conflict.code, 0); assert.equal(effects.length, 1);
+  });
+  await test('AC-024-scale-patch-variant', async () => {
+    await confirm(await approved(['scale', 'deployment/selected', '-n', ns, '--replicas=4']));
+    assert.equal(objects.get(`${apps}/deployments/selected`)!.spec.replicas, 4);
+    assert(effects.some(effect => effect.method === 'PATCH' && effect.path.endsWith('/scale')));
   });
   for (const [name, args, verify] of [
     ['cordon', ['cordon', 'b3-node'], () => assert.equal(objects.get('/api/v1/nodes/b3-node')!.spec.unschedulable, true)],
@@ -300,7 +319,7 @@ export async function checkMutations({ run, check, environment, directory, reque
   await test('B3-rollout-resume', async () => {
     objects.get(`${apps}/deployments/selected`)!.spec.paused = true;
     await confirm(await approved(['rollout', 'resume', 'deployment/selected', '-n', ns]));
-    assert.equal(objects.get(`${apps}/deployments/selected`)!.spec.paused, false);
+    assert.equal(objects.get(`${apps}/deployments/selected`)!.spec.paused ?? false, false);
   });
   await test('B3-rollout-read-status-history', async () => {
     environment.KUBERNETES_AXI_READ_ONLY = 'true';
@@ -311,7 +330,7 @@ export async function checkMutations({ run, check, environment, directory, reque
   for (const [name, args, target, verify] of [
     ['run', ['run', 'b3-run', '-n', ns, '--image=synthetic:v1', '--restart=Never'], `${core}/pods/b3-run`, (body: any) => assert.equal(body.spec.containers[0].image, 'synthetic:v1')],
     ['expose', ['expose', 'deployment/selected', '-n', ns, '--name=b3-service', '--port=80'], `${core}/services/b3-service`, (body: any) => assert.equal(body.spec.ports[0].port, 80)],
-    ['autoscale', ['autoscale', 'deployment/selected', '-n', ns, '--name=b3-hpa', '--min=1', '--max=3', '--cpu-percent=70'], `/apis/autoscaling/v2/namespaces/${ns}/horizontalpodautoscalers/b3-hpa`, (body: any) => assert.equal(body.spec.maxReplicas, 3)],
+    ['autoscale', ['autoscale', 'deployment/selected', '-n', ns, '--name=b3-hpa', '--min=1', '--max=3', '--cpu-percent=70'], `/apis/autoscaling/v1/namespaces/${ns}/horizontalpodautoscalers/b3-hpa`, (body: any) => assert.equal(body.spec.maxReplicas, 3)],
     ['disruption-budget', ['create', 'poddisruptionbudget', 'b3-budget', '-n', ns, '--selector=app=selected', '--min-available=1', '--validate=false'], `/apis/policy/v1/namespaces/${ns}/poddisruptionbudgets/b3-budget`, (body: any) => assert.equal(body.spec.minAvailable, 1)],
   ] as const) await test(`B3-operation-${name}`, async () => {
     await confirm(await approved([...args])); verify(objects.get(target));
@@ -324,7 +343,16 @@ export async function checkMutations({ run, check, environment, directory, reque
     assert.equal(result.code, variant ? 1 : 0, result.stdout);
     assert.equal([...objects.keys()].filter(path => path.includes('/pods/')).length, remaining);
     assert.equal(objects.get('/api/v1/nodes/b3-node')!.spec.unschedulable, true);
-    if (variant) { const report = decode(result.stdout) as any; assert.equal(report.state, 'failed'); assert.equal(report.results.at(-1).upstreamStatus, 403); assert(report.results.at(-1).path.endsWith('/eviction')); }
+    if (variant) { const report = decode(result.stdout) as any; assert.equal(report.state, 'failed'); assert.equal(report.results.at(-1).upstreamStatus, 403); assert(new URL(report.results.at(-1).path, 'https://local').pathname.endsWith('/eviction')); }
+  });
+  await test('AC-023-drain-accepted-still-pending', async () => {
+    const saved = await approved(['drain', 'b3-node', '--force', '--ignore-daemonsets']);
+    mode = 'eviction-pending';
+    const result = await run(['confirm', saved.request, '--digest', saved.digest]);
+    assert.equal(result.code, 1, result.stdout);
+    const report = decode(result.stdout) as any;
+    assert.equal(report.complete, false); assert.equal(report.results.filter((result: any) => result.outcome === 'accepted_pending').length, 2);
+    assert.equal([...objects.keys()].filter(path => path.includes('/pods/')).length, 2);
   });
   await test('AC-021-028-reviews-own-permissions', async () => {
     environment.KUBERNETES_AXI_READ_ONLY = 'true';

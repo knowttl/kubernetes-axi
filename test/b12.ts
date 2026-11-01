@@ -3,7 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { createServer, get } from 'node:https';
+import { createServer, get, request } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import type { TLSSocket } from 'node:tls';
@@ -66,6 +66,10 @@ const api = createServer({ key: await readFile(join(root, 'server.key')), cert: 
   requests.push({ path, identity });
   if (identity !== selected && identity !== 'certificate') { response.writeHead(401).end(); return; }
   if (block && path === podPath) { events.emit('held'); return; }
+  if (request.method !== 'GET') {
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ kind: 'Status', apiVersion: 'v1', status: 'Success' }));
+    return;
+  }
   const body = path === '/version' ? version : path === podPath ? pods
     : path === secretPath ? { kind: 'SecretList', apiVersion: 'v1', metadata: {}, items: [] } : discovery[path];
   response.writeHead(body ? 200 : 404, { 'content-type': 'application/json' }).end(JSON.stringify(body ?? {}));
@@ -77,12 +81,18 @@ assert(address && typeof address !== 'string');
 const origin = `https://localhost:${address.port}`;
 const store = createCredentialStore(db, provider);
 const runner = await Runner.create(calls);
+const adapter = createKubernetesAdapter(new EmbeddedSecretSource(store), join(root, 'writes.log'));
+const prepareAdapter = adapter.prepare.bind(adapter);
+adapter.prepare = async (...args: Parameters<typeof prepareAdapter>) => {
+  const prepared = await prepareAdapter(...args);
+  return { ...prepared, environment: { ...prepared.environment, KUBERNETES_AXI_READ_ONLY: 'false' } };
+};
 const app = createApp({ db, runner, credentialStore: store,
   audit: new Audit(db, Date.now, (line: string) => {
     auditLines.push(line);
     if (JSON.parse(line).event === 'run-terminal') events.emit('terminal');
   }), resolver: new SharedIdentityResolver(store), environment: {},
-  adapters: [createKubernetesAdapter(new EmbeddedSecretSource(store), join(root, 'writes.log'))] });
+  adapters: [adapter] });
 
 async function check(caseId: string, operation: string, variant: string, action: () => Promise<void>) {
   await action();
@@ -186,6 +196,28 @@ try {
     assert.deepEqual(db.prepare("SELECT outcome FROM audit WHERE event = 'denial' ORDER BY id DESC LIMIT 1").get(), { outcome: 'TOOL_NOT_GRANTED' });
     db.exec("INSERT INTO role_tools VALUES ('synthetic-role', 'kubernetes-axi')");
   });
+  await check('AC-RBAC-001', 'OP-024', 'broad synthetic upstream identity accepts writes independently of host grants', async () => {
+    const status = await new Promise<number | undefined>((resolveStatus, reject) => {
+      const call = request(origin + '/apis/apps/v1/namespaces/synthetic/deployments/selected/scale', {
+        ca, method: 'PATCH', headers: { authorization: `Bearer ${selected}`, 'content-type': 'application/merge-patch+json' },
+      }, response => { response.resume(); response.on('end', () => resolveStatus(response.statusCode)); });
+      call.on('error', reject); call.end('{"spec":{"replicas":2}}');
+    });
+    assert.equal(status, 200);
+  });
+  for (const args of [
+    ['native', '--', 'scale', 'deployment/selected', '--replicas=2'],
+    ['native', '--', 'exec', 'selected', '--', 'synthetic-command'],
+    ['native', '--', 'create', 'token', 'selected'],
+  ]) await check('AC-RBAC-001', 'OP-024', `host policy denies ${args.join(' ')} with package writes enabled`, async () => {
+    requests.length = 0;
+    const result = await cli(['kubernetes-axi', ...args]);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stdout, /FLAG_BLOCKED/);
+    assert.doesNotMatch(result.stdout, /Unknown command/);
+    assert.deepEqual(requests, []);
+    assert.deepEqual(await readdir(calls), []);
+  });
   for (const flag of ['config', 'profile', 'native-config', 'trust-exec', 'kubeconfig', 'server', 'context', 'user', 'token', 'as', 'as-group', 'as-uid',
     'certificate-authority', 'client-certificate', 'client-key', 'insecure-skip-tls-verify']) {
     for (const override of [[`--${flag}`, 'synthetic-override'], [`--${flag}=synthetic-override`]]) {
@@ -243,7 +275,7 @@ try {
   assert(!journal.includes(privateKey) && !journal.includes(Buffer.from(privateKey).toString('base64')));
   assert.equal(await readFile(join(root, 'writes.log'), 'utf8').catch(() => ''), '');
   console.log(JSON.stringify({ outcome: 'pass', cases, publicPath: 'real Artium CLI -> local server -> installed package -> pinned kubectl -> TLS fake',
-    policyScope: 'Kubernetes tool role grant; operation-specific role grants are not claimed', packageSha256: digest }));
+    policyScope: 'Pod-read-only host admission denies native scale, execution and token issuance before forwarding, independently of package write enablement and broader synthetic upstream permissions', packageSha256: digest }));
 } finally {
   await app.close();
   api.closeAllConnections();

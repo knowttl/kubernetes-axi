@@ -1,7 +1,7 @@
 # kubernetes-axi
 
 An agent-facing TypeScript CLI that runs pinned kubectl with an isolated identity.
-The standalone package implements B1.1 and B2.1 through B2.4: bounded reads, generated command policy, standard profiles and an explicit native identity adapter.
+The standalone package implements B1.1, B2.1 through B2.4, and B3.1/B3.2: bounded reads, generated command policy, isolated identities and confirmed resource mutations.
 The opt-in B1.2 verification journey exercises version and pod reads through a frozen local Artium fixture.
 The Linux portion of B1.3 is covered; native Windows execution and ACL conformance remain pending.
 Complete command coverage and live commissioning remain later tasks.
@@ -142,7 +142,8 @@ Unknown flags are rejected before effects.
 Compact reads reject unsupported flags explicitly; the native route preserves repeated flags and the native `--` boundary.
 AXI `--profile` selects an identity before `native --`; upstream `--profile` after that delimiter is classified as profiling output and refused.
 Credential, server, impersonation, TLS-bypass, raw-route, filesystem and streaming options are refused by this milestone's policy.
-Cluster mutations, arbitrary execution, transfers and connections remain staged for their later capabilities.
+Cluster mutations use the protected prepare, preview and confirm workflow below.
+Arbitrary execution, transfers and connections remain staged for their later capabilities.
 Explicit local native configuration edits are available through the native identity adapter described below.
 Diff has an approved staged compatibility limit: `NOT_YET_SUPPORTED_STAGED`, before reading a manifest or invoking a helper.
 When its later file/helper capability is implemented, native diff must retain exit 0 for no differences, 1 for differences and greater than 1 for failure.
@@ -202,7 +203,65 @@ Status and doctor verify file permissions, including Windows DACLs; evidence on 
 Private writes use a same-directory exclusive temporary file, fsync and atomic rename, with bounded Windows rename retries.
 Redirected paths and insecure files fail before reading credentials.
 KUBERNETES_AXI_READ_ONLY accepts only true, false, 1 or 0 and also gates native configuration writes.
-No cluster writes or write journal are implemented in this slice.
+Cluster writes default off and additionally require the confirmed request workflow below.
+
+## Prepared mutations and operational commands
+
+Enable writes explicitly in the selected execution environment.
+The host's role and operation grants remain independent of this switch.
+
+```sh
+export KUBERNETES_AXI_READ_ONLY=false
+kubernetes-axi --profile <name> prepare -- patch deployment <name> -n <namespace> --type=merge -p '{"spec":{"replicas":3}}'
+kubernetes-axi --profile <name> preview <request-key>
+kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>
+```
+
+`prepare` runs the pinned kubectl through a guarded channel and captures its exact operation sequence.
+It sends bounded reads, freezes UIDs and resourceVersions, and never forwards mutations.
+The snapshot, signing key and outcome record live in a private `requests/<request-key>` directory beside the selected standard configuration file.
+Native identities use that same protected state directory and bind to their selected context and original identity.
+The child receives a temporary loopback capability instead of the upstream credentials.
+
+`preview` reads only the saved snapshot and performs no API requests or helper execution.
+Its digest covers the cluster and identity binding, namespace, selected objects, original request bytes, and the exact normalized bytes to be forwarded.
+Secret payloads, last-applied configuration and configured credential values are redacted from the public preview.
+
+`confirm` requires the exact digest and original identity, rechecks every captured target, and atomically claims the request before writing.
+Object changes use UID/resourceVersion preconditions.
+A repeated confirmation never replays a mutation.
+Conflicts and transport failures return failure with the method, route, upstream status where available and a reconciliation read of the target identity/version.
+Partial operations remain failures and preserve results for completed requests; prepare a fresh request to act on the remaining targets.
+
+Bulk deletion additionally requires `KUBERNETES_AXI_COLLECTION_DELETE=true`.
+Preparation refuses incomplete selections and selections over 100 objects.
+It freezes the selected list, rejects changed selections during confirmation, and uses collection-delete requests restricted to each exact name with UID/resourceVersion preconditions.
+This requires the API's `deletecollection` permission independently of individual deletion permission.
+
+```sh
+export KUBERNETES_AXI_COLLECTION_DELETE=true
+kubernetes-axi --profile <name> prepare -- delete configmaps -n <namespace> -l app=selected
+kubernetes-axi --profile <name> server-dry-run -- apply -f /absolute/path/manifest.json --validate=false
+```
+
+`server-dry-run` is a separate explicit API operation with `dryRun=All`; it never issues a confirmation request.
+It requires enabled writes and the server's own resource permissions and admission checks.
+Local previews do not validate server admission.
+
+The workflow supports create, replace, client/server apply, merge/strategic/JSON patch, deletion, rollout changes, scaling, autoscaling, node cordon/uncordon/taint/drain, certificate approval/denial, labels, annotations, set, run, expose and disruption budgets.
+Resource names must be explicit; generated names cannot be bound to a stable preview.
+Caller-selected Kustomize helpers, arbitrary programs, interactive sessions and credential overrides remain unavailable.
+Rollout history and bounded status use the read path; status requires `--watch=false`.
+Authorization and identity reviews use their own non-persistent POST APIs and permissions, even in read-only mode.
+A successful identity review grants no data permissions.
+
+Typed requests are decoded using protobufjs 7.6.6 and generated schemas from checksummed official Kubernetes v0.32.2 sources.
+Unknown protobuf types are refused before forwarding.
+Regenerate schemas with `node scripts/generate-protobuf.ts`; the pinned Go module cache must contain the source files.
+The configured test verifies both generated metadata and schemas without outbound networking or an Artium fixture.
+Run `python3 scripts/verify.py task B3.1 --mode offline --pack evidence` or `B3.2` for the combined offline journeys.
+Artium journeys remain opt-in via `--artium <frozen-checkout>` and require an exact matching package pin.
+Native Windows mutation commissioning remains pending.
 The frozen Artium fixture owns hosted profile injection and role policy; it is local integration evidence, not a claim of released Artium support.
 
 ## Explicit native identity
