@@ -32,7 +32,7 @@ Each operation has a 15-second budget, at most 64 child invocations, a 5-second 
 Logs preserve text and default to 100 trailing lines and 65,536 bytes; a bounded log snapshot never claims completeness.
 Use `get <resource> [name] -o json` for compact JSON, or the native route for upstream presentation and ordered arguments.
 Compact JSON serializes the same bounded summary and provenance as TOON; it does not return the upstream Kubernetes object.
-Compact `describe` and `explain` wrap upstream text with provenance and `complete: false`; use the native route for unwrapped text.
+Compact `describe`, `explain`, `rollout history` and `rollout status` wrap upstream text with provenance and `complete: false`; use the native route for unwrapped text.
 Native stdout, stderr and exit status are preserved after redaction, with the same time and byte bounds.
 Native `kubectl get pods` consumes continuation tokens even when chunking is disabled, so the bounded read retains the original page state explicitly.
 
@@ -229,6 +229,7 @@ The child receives a temporary loopback capability instead of the upstream crede
 `preview` reads only the saved snapshot and performs no API requests or helper execution.
 Its digest covers the cluster and identity binding, namespace, selected objects, original request bytes, and the exact normalized bytes to be forwarded.
 Secret payloads, last-applied configuration and configured credential values are redacted from the public preview.
+The private saved request retains original mutation payloads, including Secret data; public preview redaction does not remove them from disk.
 
 `confirm` requires the exact digest and original identity, rechecks every captured target, and atomically claims the request before writing.
 Object changes use UID/resourceVersion preconditions.
