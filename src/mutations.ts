@@ -22,7 +22,7 @@ interface Document { apiVersion?: string; kind?: string; metadata?: Metadata; it
 interface Reply { status: number; body: Document }
 interface Snapshot { path: string; objects: { name: string; namespace: string; uid: string; version: string }[]; absent: boolean; collection: boolean }
 interface Change { operation: string; method: string; path: string; target: string; contentType: string; body: unknown; wire: string; inputBase64: string }
-interface Execution { argv: string[]; target: string; route: string; query: string }
+interface Execution { argv: string[]; target: string; route: string; query: string; stdinSha256?: string }
 interface Plan { version: 1; key: string; binding: string; command: string; namespace: string; awaitDeletion: boolean; snapshots: Snapshot[]; changes: Change[]; display: object; execution?: Execution }
 interface Saved { plan: Plan; digest: string; state: 'prepared' | 'running' | 'complete' | 'failed'; results: Result[] }
 interface Result { operation: string; method: string; path: string; outcome: string; upstreamStatus?: number; observed?: Snapshot['objects'] }
@@ -272,25 +272,40 @@ export async function mutationSession(configFile: string, invocation: Invocation
     return selected;
   };
   let execution: Execution | undefined;
-  if (['exec', 'attach'].includes(invocation.command.path)) {
+  if (['exec', 'attach', 'port-forward'].includes(invocation.command.path)) {
     if (user.exec) throw new Failure('CAPABILITY_UNAVAILABLE', 'Helper-backed execution requires a reviewed containment boundary.');
     const name = invocation.positionals[0]?.replace(/^pods?\//, '') ?? '';
     if (!/^[a-z0-9][a-z0-9.-]*$/.test(name)) throw new Failure('USAGE', 'Bounded execution requires one named pod.', 2);
     const target = `/api/v1/namespaces/${namespace}/pods/${name}`;
     const pod = await upstream('GET', target);
     await remember(target, pod);
+    if (invocation.command.path === 'port-forward') {
+      const ports = invocation.positionals.slice(1).map(port => {
+        if (!/^(?:0:)?[1-9][0-9]{0,4}$/.test(port)) throw new Failure('USAGE', 'Select numeric remote ports with optional zero local ports.', 2);
+        const value = Number(port.replace(/^0:/, ''));
+        if (value > 65535) throw new Failure('USAGE', 'Remote ports must be between 1 and 65535.', 2);
+        return value;
+      });
+      if (!ports.length || ports.length > 8 || new Set(ports).size !== ports.length || invocation.flags.has('address') && invocation.flags.get('address') !== '127.0.0.1') throw new Failure('USAGE', 'Select one to eight distinct ports bound to loopback.', 2);
+      execution = { argv: ['port-forward', name, ...ports.map(port => `0:${port}`), '--namespace', namespace, '--address=127.0.0.1'],
+        target, route: `${target}/portforward`, query: '' };
+    } else {
     const containers = (pod.body.spec as { containers?: { name: string }[] } | undefined)?.containers ?? [];
     const container = invocation.flags.get('container') ?? containers[0]?.name;
     if (!container || !containers.some(item => item.name === container)) throw new Failure('USAGE', 'Select a container in the named pod.', 2);
-    const query = new URLSearchParams({ container, stdout: 'true', stderr: 'true', timeout: '5s' });
+    const query = new URLSearchParams({ container, stdout: 'true', stderr: 'true' });
+    if (!invocation.session) query.set('timeout', '5s');
+    if (invocation.flags.get('stdin') === 'true') query.set('stdin', 'true');
     if (invocation.command.path === 'exec') {
       const delimiter = invocation.argv.indexOf('--');
       if (delimiter < 0 || delimiter === invocation.argv.length - 1) throw new Failure('USAGE', 'Use exec <pod> -- <command> [arguments].', 2);
       for (const arg of invocation.argv.slice(delimiter + 1)) query.append('command', arg);
     }
     execution = { argv: [...invocation.argv], target, route: `${target}/${invocation.command.path}`, query: query.toString() };
+    if (invocation.inputSha256) execution.stdinSha256 = invocation.inputSha256;
     // Container flags must precede the remote command delimiter.
     execution.argv.splice(invocation.argv.indexOf('--') < 0 ? execution.argv.length : invocation.argv.indexOf('--'), 0, '--namespace', namespace, '--container', container);
+    }
   }
   const server = createServer((incoming, response) => {
     void (async () => {

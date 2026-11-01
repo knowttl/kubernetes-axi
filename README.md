@@ -2,6 +2,7 @@
 
 An agent-facing TypeScript CLI that runs pinned kubectl with an isolated identity.
 The standalone package implements B1.1, B2.1 through B2.4, and B3.1 through B3.4: bounded reads, generated command policy, isolated identities, confirmed resource mutations, bounded execution and private token acquisition.
+Its private hosted worker also supports workspace copy, independent byte sessions and authenticated multi-port forwarding through Artium for B4.1 through B4.3.
 The opt-in B1.2 verification journey exercises version and pod reads through a frozen local Artium fixture.
 The Linux portion of B1.3 is covered; native Windows execution and ACL conformance remain pending.
 Complete command coverage and live commissioning remain later tasks.
@@ -155,7 +156,8 @@ Credential overrides, server overrides, impersonation and TLS-bypass options are
 Filesystem options are refused except for mutation inputs described below and explicit native configuration operations.
 Cluster mutations use the protected prepare, preview and confirm workflow below.
 For supported raw routes, execution and token acquisition, see [Bounded execution and private token acquisition](#bounded-execution-and-private-token-acquisition).
-Transfers, proxy connections and interactive sessions remain unavailable.
+Direct standalone transfers, generic proxy listeners and interactive sessions remain unavailable.
+Hosted transfers and port forwarding use the bounded Artium integration described below.
 Explicit local native configuration edits are available through the native identity adapter described below.
 Diff has an approved staged compatibility limit: `NOT_YET_SUPPORTED_STAGED`, before reading a manifest or invoking a helper.
 When its later file/helper capability is implemented, native diff must retain exit 0 for no differences, 1 for differences and greater than 1 for failure.
@@ -313,6 +315,37 @@ The channel ends with the bounded invocation; cancellation, expiry and failed de
 The recipient owns subsequent use after explicit delivery.
 Request files contain the approved TokenRequest specification and outcome, never the issued token.
 Hosted admission still denies ungranted native scale, exec and token commands before forwarding.
+
+### Hosted files and bounded sessions
+
+An Artium host with the Kubernetes session integration can upload caller-owned file trees, use stdin manifests, recursive `-f` directories or builtin Kustomize inputs, and copy regular container files in either direction.
+Copy requires the container's `tar` command.
+Binary input and artifacts preserve NUL and invalid UTF-8 bytes; configured credentials in public output are refused without changing the bytes.
+Traversal, links and oversized archives are rejected before artifact materialization.
+
+The authenticated session API provides start, status, output and cancellation operations under `/v1/tools/kubernetes-axi/sessions`.
+Writes and arbitrary execution retain the existing frozen preview and exact-digest confirmation policy.
+Every operation checks the caller, login family, current operation grant and credential revision.
+Output records carry channel, sequence, byte offset and length, with separate stdout/stderr EOF, process exit and explicit gaps or truncation.
+Cancellation, expiry, revocation and shutdown terminate the process and remove temporary identities and workspaces.
+
+Port-forward sessions freeze a named pod and up to eight numeric remote ports.
+The Artium client binds loopback listeners and carries independent connections over the owning session's authenticated tunnel.
+Client-initiated EOF allows remote output to drain.
+The pinned kubectl port-forward transport (client-go v0.32.2) resets the stream after remote EOF, so continued client input after remote-initiated half-close is not supported in this slice.
+Unapproved ports and ungranted raw or nested proxy effects cannot bypass the shared policy.
+
+```text
+artium-axi kubernetes-axi tunnel <session-id> --port 8080 --port 9090
+python3 scripts/verify.py task B4.1 --mode offline --pack evidence --artium <frozen-checkout>
+python3 scripts/verify.py task B4.2 --mode offline --pack evidence --artium <frozen-checkout>
+python3 scripts/verify.py task B4.3 --mode offline --pack evidence --artium <frozen-checkout>
+```
+
+These task checks require a clean frozen Artium checkout whose Kubernetes tarball matches the package under test.
+An unsealed checkout or mismatched pin reports pending, even when individual development cases pass.
+Ordinary `npm test` skips Artium journeys with an explicit reason and needs no Artium fixture.
+Native Windows execution and live commissioning remain pending.
 
 See [Build and verification](#build-and-verification) for credential-custody observation requirements.
 

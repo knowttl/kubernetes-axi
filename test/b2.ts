@@ -9,6 +9,9 @@ import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
 import { mutationFixture, checkMutations } from './b3.ts';
 import { remoteFixture, checkRemote, executionToken } from './remote.ts';
+import { checkB4Host } from './b4.ts';
+import type { Socket } from 'node:net';
+import { once } from 'node:events';
 
 const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
@@ -108,6 +111,11 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
   } } });
   send({ status: 404, headers: { 'Content-Type': 'application/json' }, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', message: 'NotFound', code: 404 } });
 });
+const upgrades = new Map<Socket, { port: number | undefined; owner: string }>();
+server.on('upgrade', (request, stream) => {
+  const socket = stream as Socket;
+  upgrades.set(socket, { port: socket.remotePort, owner: new URL(request.url!, 'https://local').searchParams.getAll('command')[0] === 'hold' ? 'session-hold' : 'session-or-one-shot' });
+});
 server.requestTimeout = 15_000;
 await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
 const address = server.address();
@@ -132,6 +140,9 @@ const environment: NodeJS.ProcessEnv = {
   KUBERNETES_AXI_READ_ONLY: 'true',
 };
 const cases: { case: string; outcome: string }[] = [];
+const artiumArgument = process.argv.indexOf('--artium');
+const selectedArtium = artiumArgument >= 0 ? resolve(process.argv[artiumArgument + 1]!) : undefined;
+const taskArgument = process.argv.indexOf('--task');
 const run = async (args: string[], executable = cli): Promise<{ code: number; stdout: string; stderr: string }> => {
   try { const result = await execute('node', [executable, ...args], { env: environment, timeout: 20_000, maxBuffer: 8 * 1024 * 1024 }); return { code: 0, ...result }; }
   catch (error) { const result = error as { code: number; stdout: string; stderr: string }; return { code: result.code, stdout: result.stdout, stderr: result.stderr }; }
@@ -469,6 +480,7 @@ try {
   }
   await checkMutations({ run, check, environment, directory, requests });
   await checkRemote({ server, run, check, environment, directory, requests, cli });
+  if (selectedArtium) await checkB4Host({ artium: selectedArtium, directory, cli, environment, server, check, run });
   await check('R6-native-prefix-all-operation-paths', async () => local(async () => {
     variant = 'native-prefix'; environment.KUBERNETES_AXI_READ_ONLY = 'false';
     const settings = structuredClone(nativeSettings);
@@ -505,13 +517,33 @@ try {
       writeFileSync(nativeFile, JSON.stringify(nativeSettings)); environment.KUBERNETES_AXI_READ_ONLY = 'true';
     }
   }));
+} catch (error) {
+  process.exitCode = 1;
+  throw error;
 } finally {
+  await Promise.all([...upgrades].map(async ([socket, metadata]) => {
+    if (!socket.readableEnded && !socket.destroyed) {
+      const signal = AbortSignal.timeout(10000);
+      await Promise.race([once(socket, 'end', { signal }), once(socket, 'close', { signal })]);
+    }
+    assert(socket.readableEnded || socket.destroyed, `A ${metadata.owner} peer remained open after completion.`);
+    socket.destroy();
+  }));
   server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
-  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4', 'B3.1', 'B3.2', 'B3.3', 'B3.4'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
-    packageSha256: createHash('sha256').update(readFileSync(join(directory, packed[0].filename))).digest('hex'),
+  const artiumRevision = selectedArtium ? execFileSync('git', ['-C', selectedArtium, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() : undefined;
+  const packageSha256 = createHash('sha256').update(readFileSync(join(directory, packed[0].filename))).digest('hex');
+  const artiumDirty = selectedArtium ? Boolean(execFileSync('git', ['-C', selectedArtium, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' }).trim()) : false;
+  const fixturePackageSha256 = selectedArtium ? createHash('sha256').update(readFileSync(join(selectedArtium, 'tools/fixtures/knowttl-kubernetes-axi-0.1.0.tgz'))).digest('hex') : undefined;
+  const fixturePending = Boolean(selectedArtium && (artiumDirty || fixturePackageSha256 !== packageSha256));
+  if (!process.exitCode && fixturePending) process.exitCode = 2;
+  console.log(JSON.stringify({ tasks: taskArgument >= 0 ? [process.argv[taskArgument + 1]] : ['B2.1', 'B2.2', 'B2.3', 'B2.4', 'B3.1', 'B3.2', 'B3.3', 'B3.4'], outcome: process.exitCode === 2 ? 'pending' : process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
+    artium: selectedArtium ? { outcome: 'executed', revision: artiumRevision,
+      sourceArchiveSha256: createHash('sha256').update(execFileSync('git', ['-C', selectedArtium, 'archive', artiumRevision!], { maxBuffer: 64 * 1024 * 1024 })).digest('hex'),
+      workingTreeDirty: artiumDirty, fixturePackageSha256, packageMatchesCandidate: fixturePackageSha256 === packageSha256 } : { outcome: 'skipped', reason: 'Real Artium journeys are opt-in; supply --artium <frozen-checkout>.' },
+    packageSha256,
     kubectlPins: JSON.parse(readFileSync(join(installed, 'kubectl-pins.json'), 'utf8')),
-    publicPaths: ['installed compact CLI', 'installed native kubectl route'], network: 'isolated Linux network namespace; loopback only', fixtureHashes: hashes, cases,
+    publicPaths: ['installed compact CLI', 'installed native kubectl route', ...(selectedArtium ? ['authenticated Artium workspace/session/tunnel APIs and loopback client'] : [])], network: 'isolated Linux network namespace; loopback only', fixtureHashes: hashes, cases,
     nativeWriteObserver: process.env.KUBERNETES_AXI_TEST_WRITE_OBSERVER_SHA256 ?? 'not supplied',
-    pending: ['Artium journeys and real credential-store observation require the separate opt-in verifier', ...(process.env.KUBERNETES_AXI_TEST_WRITE_OBSERVER ? [] : ['B3.4 native write observation requires a pinned strace binary']), 'native Windows commissioning'] }, null, 2));
+    pending: [...(fixturePending ? ['A clean frozen Artium checkout pinned to this exact package digest is required.'] : []), ...(selectedArtium ? [] : ['Artium journeys require the separate opt-in verifier']), ...(process.env.KUBERNETES_AXI_TEST_WRITE_OBSERVER ? [] : ['B3.4 native write observation requires a pinned strace binary']), 'native Windows commissioning', 'live commissioning'] }, null, 2));
   rmSync(directory, { recursive: true, force: true });
 }

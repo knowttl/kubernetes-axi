@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from 'node:https';
 import { get } from 'node:https';
@@ -9,6 +9,9 @@ import { decode } from '@toon-format/toon';
 import { constants, createDeflate } from 'node:zlib';
 import type { Duplex } from 'node:stream';
 import { deliverCredential } from './private-delivery.ts';
+import { spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
+import { dirname } from 'node:path';
 
 const core = '/api/v1/namespaces/synthetic-remote';
 const token = 'synthetic-issued-only-in-memory+/=';
@@ -18,6 +21,10 @@ let fallback = false;
 let tokenMode: 'valid' | 'expired' | 'hold' = 'valid';
 let tokenReached: (() => void) | undefined;
 const forwarded: { method: string; path: string; query: string }[] = [];
+let portForward: ((incoming: IncomingMessage, socket: Duplex, head: Buffer) => void) | undefined;
+export function portForwardFixture(handler: typeof portForward): void { portForward = handler; }
+let copyVariant: 'safe' | 'traversal' | 'link' | 'oversize' = 'safe';
+export function copyFixtureVariant(variant: typeof copyVariant): void { copyVariant = variant; }
 const pod = () => ({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'selected', namespace: 'synthetic-remote', uid: 'remote-pod', resourceVersion: revision }, spec: { containers: [{ name: 'first', image: 'synthetic' }, { name: 'selected-container', image: 'synthetic' }] }, status: { phase: 'Running' } });
 
 export function remoteFixture(incoming: IncomingMessage, response: ServerResponse): boolean {
@@ -25,6 +32,22 @@ export function remoteFixture(incoming: IncomingMessage, response: ServerRespons
   if (!path.startsWith(core)) return false;
   const selected = ['synthetic-selected-token', executionToken].some(token => incoming.headers.authorization === `Bearer ${token}`);
   if (!selected && !(incoming.headers.authorization === `Bearer ${token}` && incoming.method === 'GET' && path === `${core}/pods/selected`)) { response.writeHead(401).end(); return true; }
+  const url = new URL(incoming.url!, 'https://local');
+  if (path === `${core}/pods/selected/log`) {
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.write('synthetic followed log line\n'.repeat(8));
+    if (url.searchParams.get('follow') !== 'true') response.end();
+    return true;
+  }
+  if (path === `${core}/pods` && url.searchParams.get('watch') === 'true') {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.write(JSON.stringify({ type: 'ADDED', object: pod() }) + '\n');
+    return true;
+  }
+  if (path === `${core}/pods` && incoming.method === 'GET') {
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ apiVersion: 'v1', kind: 'PodList', metadata: { resourceVersion: revision }, items: [pod()] }));
+    return true;
+  }
   if (path.endsWith('/token') && tokenMode === 'hold') { tokenReached?.(); return true; }
   const body = path === `${core}/pods/selected` ? pod() : path === `${core}/serviceaccounts/selected` ? {
     apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name: 'selected', namespace: 'synthetic-remote', uid: 'remote-sa', resourceVersion: '1' },
@@ -36,7 +59,7 @@ export function remoteFixture(incoming: IncomingMessage, response: ServerRespons
   return true;
 }
 
-function webSocketFrame(channel: number, text: string): Buffer {
+function webSocketFrame(channel: number, text: string | Buffer): Buffer {
   const payload = Buffer.concat([Buffer.from([channel]), Buffer.from(text)]);
   const header = Buffer.alloc(payload.length < 126 ? 2 : 4);
   header[0] = 0x82;
@@ -97,11 +120,19 @@ export async function checkRemote(context: {
   environment: NodeJS.ProcessEnv; directory: string; requests: string[]; cli: string;
 }): Promise<void> {
   const { server, run, check, environment, directory, requests, cli } = context;
+  const container = join(directory, 'container', 'files');
+  mkdirSync(container, { recursive: true, mode: 0o700 });
   const deliver = (args: string[], cancel = false) => deliverCredential(cli, environment, args, token, cancel ? stop => { tokenReached = stop; } : undefined);
   server.on('upgrade', (incoming, socket, head) => {
+    socket.once('end', () => socket.destroy());
     if (!['synthetic-selected-token', executionToken].some(token => incoming.headers.authorization === `Bearer ${token}`)) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
     const url = new URL(incoming.url!, 'https://local');
     forwarded.push({ method: incoming.method!, path: url.pathname, query: url.search });
+    if (url.pathname.endsWith('/portforward')) {
+      if (portForward) portForward(incoming, socket, head);
+      else socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
     if (fallback && incoming.method === 'GET') { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
     const commands = url.searchParams.getAll('command');
     const output = JSON.stringify(commands);
@@ -110,6 +141,59 @@ export async function checkRemote(context: {
     if (incoming.method === 'GET') {
       const accept = createHash('sha1').update(incoming.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
       socket.write(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: v5.channel.k8s.io\r\n\r\n`);
+      if (commands[0] === 'hold') { socket.write(webSocketFrame(1, 'held')); socket.resume(); return; }
+      const tarUpload = JSON.stringify(commands) === JSON.stringify(['tar', 'xf', '-', '-C', '/files']);
+      const tarDownload = commands.length === 7 && commands.slice(0, 6).join(' ') === 'tar cf - -C /files --' && /^[a-z0-9.-]+$/.test(commands[6]!);
+      const tar = (input: Buffer, argv: string[]): void => {
+        const child = spawn('tar', argv);
+        const stdout: Buffer[] = []; const stderr: Buffer[] = [];
+        child.stdout.on('data', (bytes: Buffer) => stdout.push(bytes));
+        child.stderr.on('data', (bytes: Buffer) => stderr.push(bytes));
+        child.stdin.on('error', () => {}); child.stdin.end(input);
+        child.once('close', code => {
+          const archive = Buffer.concat(stdout);
+          if (tarDownload && archive.length >= 512 && copyVariant !== 'safe') {
+            const header = archive.subarray(0, 512);
+            if (copyVariant === 'traversal') { header.fill(0, 0, 100); header.fill(0, 345, 500); header.write('../escape.bin'); }
+            if (copyVariant === 'link') { header[156] = 50; header.write('../../escape.bin', 157, 100); }
+            if (copyVariant === 'oversize') header.write((100 * 1024 * 1024 + 1).toString(8).padStart(11, '0') + '\0', 124, 12);
+            header.fill(32, 148, 156);
+            header.write(header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, '0') + '\0 ', 148, 8);
+          }
+          socket.end(Buffer.concat([
+          webSocketFrame(1, archive), webSocketFrame(2, Buffer.concat(stderr)),
+          webSocketFrame(3, JSON.stringify(code === 0 ? { status: 'Success' } : { status: 'Failure', reason: 'NonZeroExitCode', details: { causes: [{ reason: 'ExitCode', message: String(code) }] } })),
+          Buffer.from([0x88, 2, 3, 232]),
+          ]));
+        });
+        socket.once('close', () => child.kill('SIGTERM'));
+      };
+      if (tarDownload) { tar(Buffer.alloc(0), ['cf', '-', '-C', container, '--', commands[6]!]); return; }
+      if (commands[0] === 'echo-bytes' || tarUpload) {
+        let pending = head;
+        const input: Buffer[] = [];
+        const receive = (chunk: Buffer): void => {
+          pending = Buffer.concat([pending, chunk]);
+          while (pending.length >= 6) {
+            const marker = pending[1]! & 127;
+            const header = marker === 126 ? 4 : 2;
+            if (pending.length < header + 4) return;
+            const length = marker === 126 ? pending.readUInt16BE(2) : marker;
+            if (pending.length < header + 4 + length) return;
+            const mask = pending.subarray(header, header + 4);
+            const payload = Buffer.from(pending.subarray(header + 4, header + 4 + length));
+            for (let index = 0; index < payload.length; index++) payload[index] = payload[index]! ^ mask[index % 4]!;
+            pending = pending.subarray(header + 4 + length);
+            if (payload[0] === 0) input.push(payload.subarray(1));
+            if (payload[0] === 255 && payload[1] === 0) {
+              if (tarUpload) tar(Buffer.concat(input), ['xf', '-', '-C', container]);
+              else socket.end(Buffer.concat([webSocketFrame(1, Buffer.concat(input)), webSocketFrame(2, Buffer.from([255, 0, 128])), webSocketFrame(3, status), Buffer.from([0x88, 2, 3, 232])]));
+            }
+          }
+        };
+        socket.on('data', receive);
+        return;
+      }
       socket.end(Buffer.concat([webSocketFrame(1, output), webSocketFrame(2, 'diagnostic\n'), webSocketFrame(3, status), Buffer.from([0x88, 2, 3, 232])]));
     } else {
       socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: SPDY/3.1\r\nX-Stream-Protocol-Version: v4.channel.k8s.io\r\n\r\n');
@@ -126,6 +210,59 @@ export async function checkRemote(context: {
   };
   try {
     environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    await check('AC-BYTES-001:session stdin stdout stderr and EOF preserve arbitrary bytes', async () => {
+      const bytes = Buffer.from([0, 255, 254, 128, 10, 13, 0]);
+      const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      const events = new EventEmitter();
+      const output = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+      child.stderr!.resume();
+      let failure: unknown;
+      child.on('message', (raw: unknown) => {
+        const event = raw as { event: string; channel: 'stdout' | 'stderr'; base64: string };
+        if (event.event === 'output') output[event.channel].push(Buffer.from(event.base64, 'base64'));
+        if (event.event === 'failed') failure = event;
+        events.emit(event.event, raw);
+      });
+      const prepared = once(events, 'prepared', { signal: AbortSignal.timeout(15000) });
+      const closed = once(child, 'close');
+      child.send({ action: 'start', args: ['prepare', '--', 'exec', 'selected', '-n', 'synthetic-remote', '-i', '--', 'echo-bytes'], stdinBase64: bytes.toString('base64'), timeoutMs: 10000 });
+      const [{ preview }] = await prepared as [{ preview: { digest: string } }];
+      const exited = once(events, 'exit', { signal: AbortSignal.timeout(15000) });
+      child.send({ action: 'confirm', digest: preview.digest });
+      const [result] = await exited as [{ exitCode: number; stdoutEOF: boolean; stderrEOF: boolean }];
+      await closed;
+      assert.equal(failure, undefined);
+      assert.deepEqual(Buffer.concat(output.stdout), bytes);
+      assert.deepEqual(Buffer.concat(output.stderr), Buffer.from([255, 0, 128]));
+      assert.deepEqual(result, { event: 'exit', exitCode: 0, stdoutEOF: true, stderrEOF: true });
+    });
+    await check('AC-SESSION-002:private host disconnect removes the running credential files', async () => {
+      const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      const events = new EventEmitter();
+      const received: string[] = [];
+      child.on('message', (raw: unknown) => { const event = raw as { event: string }; received.push(event.event); events.emit(event.event, raw); });
+      const prepared = once(events, 'prepared', { signal: AbortSignal.timeout(15000) });
+      const exited = once(child, 'exit', { signal: AbortSignal.timeout(15000) });
+      let phase = 'prepare';
+      try {
+        child.send({ action: 'start', args: ['prepare', '--', 'exec', 'selected', '-n', 'synthetic-remote', '--', 'hold'], timeoutMs: 10000 });
+        const [{ preview }] = await prepared as [{ preview: { digest: string } }];
+        phase = 'upgrade';
+        const connected = once(server, 'upgrade', { signal: AbortSignal.timeout(10000) });
+        child.send({ action: 'confirm', digest: preview.digest });
+        await connected;
+        phase = 'disconnect-close';
+        child.disconnect();
+        await exited;
+        phase = 'private-file-cleanup';
+        assert.deepEqual(readdirSync(environment.TMPDIR!), []);
+      } catch (error) { throw new Error(JSON.stringify({ phase, received }), { cause: error }); }
+      finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          const stopped = once(child, 'exit'); child.kill('SIGKILL'); await stopped;
+        }
+      }
+    });
     await check('AC-017:TTY requires a local terminal', async () => {
       requests.length = 0;
       const result = await run(['prepare', '--', 'exec', 'selected', '-it', '--', 'true']);
