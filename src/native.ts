@@ -27,7 +27,7 @@ export async function inspectNative(binary: string, snapshot: string, redactor: 
   } catch { throw new Failure('CONFIG_INVALID', 'The selected native kubeconfig is invalid.'); }
 }
 
-export async function nativeConfig(binary: string, selection: string, context: string | undefined, directory: string, trustExec: boolean, redactor: Redactor, signal: AbortSignal): Promise<{ config: object; source: string; namespace: string; close: () => Promise<void> }> {
+export async function nativeConfig(binary: string, selection: string, context: string | undefined, directory: string, trustExec: boolean, redactor: Redactor, signal: AbortSignal): Promise<{ config: object; binding: string; source: string; namespace: string; close: () => Promise<void> }> {
   const paths = selection === 'ambient' ? (process.env.KUBECONFIG ? process.env.KUBECONFIG.split(delimiter).filter(Boolean) : [join((await import('node:os')).homedir(), '.kube', 'config')]) : [selection];
   if (!paths.length || paths.some(path => !isAbsolute(path))) throw new Failure('CONFIG_INVALID', 'Select absolute native kubeconfig paths.');
   const merged: Config = { clusters: [], users: [], contexts: [] };
@@ -66,6 +66,7 @@ export async function nativeConfig(binary: string, selection: string, context: s
   if (!cluster['certificate-authority-data']) throw new Failure('CONFIG_INVALID', 'Supply explicit native certificate authority trust.');
   if (!user.exec && !user.token && !(user['client-certificate-data'] && user['client-key-data'])) throw new Failure('AUTH_REQUIRED', 'Supply authentication in the selected native identity.');
   redactor.register(typeof user.token === 'string' ? user.token : undefined, ...['client-key-data', 'client-certificate-data'].map(key => typeof user[key] === 'string' ? Buffer.from(user[key], 'base64').toString() : undefined));
+  const binding = JSON.stringify({ cluster, user, context: name, namespace: selected.namespace ?? 'default' });
   let close = async (): Promise<void> => {};
   if (user.exec) {
     if (!trustExec) throw new Failure('AUTH_HELPER_UNTRUSTED', 'Review the selected helper, then opt in with --trust-exec. Its existing cache remains helper-owned.');
@@ -103,6 +104,7 @@ export async function nativeConfig(binary: string, selection: string, context: s
     user.exec = { apiVersion: helper.apiVersion, command: process.execPath, args: [fileURLToPath(new URL('./exec-shim.js', import.meta.url)), socketPath], interactiveMode: helper.interactiveMode ?? 'Never', provideClusterInfo: helper.provideClusterInfo ?? false };
   }
   return {
+    binding,
     config: { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'selected', cluster }], users: [{ name: 'selected', user }], contexts: [{ name: name!, context: { cluster: 'selected', user: 'selected', namespace: selected.namespace ?? 'default' } }], 'current-context': name },
     source: `native:${paths.join(delimiter)} context:${name}; ambient exception; helper cache owned by helper`, namespace: selected.namespace ?? 'default', close,
   };

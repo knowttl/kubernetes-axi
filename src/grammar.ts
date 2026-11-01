@@ -10,6 +10,7 @@ const bytes = await readFile(new URL('../command-metadata.json', import.meta.url
 export const metadata = JSON.parse(bytes.toString()) as { version: string; commands: Command[] };
 
 export interface Invocation {
+  workflow?: { kind: 'prepare' | 'server-dry-run' } | { kind: 'preview' | 'confirm'; key: string; digest: string };
   native: boolean;
   config?: string;
   profile?: string;
@@ -30,8 +31,23 @@ export function parse(args: string[]): Invocation {
   const own: { config?: string; profile?: string; nativeConfig?: string; trustExec: boolean } = { trustExec: false };
   const argv: string[] = [];
   let native = false;
+  let workflow: Invocation['workflow'];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
+    if (argv.length === 0 && ['prepare', 'server-dry-run'].includes(arg)) {
+      if (args[index + 1] !== '--') throw new Failure('USAGE', `Use ${arg} -- <Kubernetes command and arguments>.`, 2);
+      workflow = { kind: arg as 'prepare' | 'server-dry-run' };
+      argv.push(...args.slice(index + 2));
+      break;
+    }
+    if (argv.length === 0 && ['preview', 'confirm'].includes(arg)) {
+      const key = args[index + 1] ?? '';
+      const tail = args.slice(index + 2);
+      if (!/^[a-f0-9-]{36}$/.test(key) || (arg === 'preview' ? tail.length !== 0 : tail.length !== 2 || tail[0] !== '--digest' || !/^[a-f0-9]{64}$/.test(tail[1] ?? ''))) throw new Failure('USAGE', 'Use preview <request-key> or confirm <request-key> --digest <preview-digest>.', 2);
+      workflow = { kind: arg as 'preview' | 'confirm', key, digest: tail[1] ?? '' };
+      validateSelection(own);
+      return { ...own, native: false, workflow, command: { path: arg, aliases: [], flags: [], use: arg, description: 'Inspect or confirm a frozen request.', effect: arg === 'preview' ? 'localRead' : 'clusterWrite' }, argv: [], positionals: [], flags: new Map(), help: false, home: false };
+    }
     if (arg === 'native' && argv.length === 0) {
       if (args[index + 1] !== '--') throw new Failure('USAGE', 'Use kubernetes-axi [--profile <name>] native -- <kubectl arguments>.', 2);
       native = true;
@@ -105,10 +121,16 @@ export function parse(args: string[]): Invocation {
       const flag = command.flags.find(flag => flag.name === name)!;
       if (!flag.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The flag has no reviewed effect classification.');
       if (flag.effect === 'stream') continue;
-      if (!(own.nativeConfig && flag.name === 'context') && !['argument', 'presentation'].includes(flag.effect)) throw new Failure('USAGE', `--${flag.name} is unavailable under the isolated bounded-read policy (${flag.effect}).`, 2);
+      const writeInput = workflow && ['prepare', 'server-dry-run'].includes(workflow.kind) && (flag.effect === 'fileRead' && ['filename', 'patch-file'].includes(flag.name) || flag.effect === 'clusterWrite' && ['dry-run', 'server-side', 'force-conflicts', 'force', 'prune', 'prune-allowlist'].includes(flag.name));
+      if (!(own.nativeConfig && flag.name === 'context') && !writeInput && !['argument', 'presentation'].includes(flag.effect)) throw new Failure('USAGE', `--${flag.name} is unavailable under the isolated bounded-read policy (${flag.effect}).`, 2);
       if (flag.name === 'output' && /file[=\s]|template-file/.test(flags.get(flag.name)!)) throw new Failure('USAGE', 'File templates require a later local-file capability.', 2);
     }
-    if (!(own.nativeConfig && native && command.path.startsWith('config ')) && !['read', 'local'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `The ${command.effect} capability is not available in this milestone.`);
+    if (command.effect === 'clusterWrite') {
+      requireWrites();
+      if (!workflow) throw new Failure('PREVIEW_REQUIRED', 'Use prepare -- <command>, preview <request-key>, then confirm <request-key> --digest <digest>.');
+      if (flags.has('dry-run')) throw new Failure('USAGE', 'Use server-dry-run -- <command> for server validation, or prepare -- <command> for a frozen request.', 2);
+    } else if (workflow) throw new Failure('USAGE', 'Preparation and server dry run require a resource mutation command.', 2);
+    if (!(own.nativeConfig && native && command.path.startsWith('config ')) && !['read', 'local', 'clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `The ${command.effect} capability is not available in this milestone.`);
     if (['wait', 'events'].includes(command.path)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bounded event reads use get events; wait and streaming sessions require a later capability.');
     if (!native) {
       const allowed: Record<string, string[]> = {
@@ -118,16 +140,24 @@ export function parse(args: string[]): Invocation {
       };
       if (Object.hasOwn(allowed, command.path)) {
         for (const name of flags.keys()) if (!allowed[command.path]!.includes(name)) throw new Failure('USAGE', `--${name} requires native -- ${command.path} for upstream semantics.`, 2);
-      } else if (!['logs', 'describe', 'explain'].includes(command.path)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Use native -- for this upstream read.');
+      } else if (!['logs', 'describe', 'explain', 'rollout history', 'rollout status', 'apply view-last-applied'].includes(command.path) && !['clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Use native -- for this upstream read.');
       const maxArgs = command.path === 'get' ? 2 : command.path.startsWith('top ') ? 1 : command.path === '' || command.path === 'version' || command.path.startsWith('api-') ? 0 : undefined;
       if (maxArgs !== undefined && (positionals.length > maxArgs || (command.path === 'get' && positionals.length === 0))) throw new Failure('USAGE', 'Supply one resource type and at most one resource name.', 2);
       if (command.path === 'get' && flags.has('output') && flags.get('output') !== 'json') throw new Failure('USAGE', 'Compact reads support -o json; use native -- for other output formats.', 2);
     }
   }
+  validateSelection(own);
+  return { native, ...own, ...(workflow ? { workflow } : {}), command, argv, positionals, flags, help, home: command.path === '' && positionals.length === 0 };
+}
+
+function validateSelection(own: { config?: string; profile?: string; nativeConfig?: string; trustExec: boolean }): void {
   if (own.trustExec && !own.nativeConfig) throw new Failure('USAGE', '--trust-exec requires --native-config.', 2);
   if (own.nativeConfig && own.nativeConfig !== 'ambient' && !isAbsolute(own.nativeConfig)) throw new Failure('CONFIG_INVALID', 'Select an absolute native kubeconfig path or ambient.');
   if (own.nativeConfig && (own.config || own.profile || ['CONFIG', 'PROFILE', 'ORIGIN', 'AUTH', 'NAMESPACE', 'CERTIFICATE_AUTHORITY', 'TOKEN', 'CLIENT_CERTIFICATE', 'PRIVATE_KEY'].some(field => process.env[`KUBERNETES_AXI_${field}`] !== undefined))) throw new Failure('CONFIG_INVALID', 'Native selection cannot override a standard or hosted profile.');
-  return { native, ...own, command, argv, positionals, flags, help, home: command.path === '' && positionals.length === 0 };
+}
+
+export function requireWrites(): void {
+  if (!/^(false|0)$/i.test(process.env.KUBERNETES_AXI_READ_ONLY ?? '')) throw new Failure('READ_ONLY', 'Writes require KUBERNETES_AXI_READ_ONLY=false and explicit confirmation.');
 }
 
 export function commandHelp(command: Command): object {

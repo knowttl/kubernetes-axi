@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
+import { mutationFixture, checkMutations } from './b3.ts';
 
 const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
@@ -63,6 +64,7 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
     if (override.envelope === 'oversize') { response.writeHead(200); response.end('x'.repeat(5 * 1024 * 1024)); return; }
     return send(override.envelope);
   }
+  if (mutationFixture(request, response)) return;
   if (path === '/version') return send(fixture('P-001'));
   if (path === '/api') return send(fixture('P-002'));
   if (path === '/apis') return json(groups);
@@ -125,6 +127,8 @@ const run = async (args: string[], executable = cli): Promise<{ code: number; st
   catch (error) { const result = error as { code: number; stdout: string; stderr: string }; return { code: result.code, stdout: result.stdout, stderr: result.stderr }; }
 };
 const check = async (id: string, test: () => Promise<void>): Promise<void> => {
+  const filter = process.argv.indexOf('--case');
+  if (filter >= 0 && !new RegExp(process.argv[filter + 1]!).test(id)) return;
   requests.length = 0; override = undefined; variant = '';
   try { await test(); cases.push({ case: id, outcome: 'pass' }); }
   catch (error) { cases.push({ case: id, outcome: 'failure' }); console.error(id, error); process.exitCode = 1; }
@@ -149,6 +153,7 @@ const local = async (test: () => Promise<void>): Promise<void> => {
   try { await test(); } finally { environment.KUBERNETES_AXI_CONFIG = selected; }
 };
 try {
+  if (!process.argv.includes('--b3-only')) {
   await check('CC-008/014-cancellation-cleanup', async () => {
     variant = 'cancel';
     const arrived = new Promise<void>(done => { cancelRequest = done; });
@@ -420,6 +425,8 @@ try {
     try { writeFileSync(path, Buffer.concat([saved, Buffer.from(' ')])); const result = await run(['get', 'pods']); assert.equal((decode(result.stdout) as any).error.code, 'METADATA_STALE'); assert.equal(requests.length, 0); }
     finally { writeFileSync(path, saved); }
   });
+  }
+  await checkMutations({ run, check, environment, directory, requests });
 } finally {
   server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
   console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
