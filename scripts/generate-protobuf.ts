@@ -4,6 +4,30 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import protobuf from 'protobufjs';
 
+function jsonContract(source: string): Record<string, Record<string, string>> {
+  const imports: Record<string, string> = {};
+  const result: Record<string, Record<string, string>> = {};
+  const importBlock = /^import \(([\s\S]*?)^\)/m.exec(source)?.[1] ?? '';
+  for (const entry of importBlock.matchAll(/^\s*(?:(\w+)\s+)?"([^"]+)"/gm)) {
+    const path = entry[2]!;
+    imports[entry[1] ?? path.split('/').at(-1)!] = path.replaceAll('/', '.');
+  }
+  for (const declaration of source.matchAll(/^type (\w+) struct \{([\s\S]*?)^\}/gm)) {
+    const fields: Record<string, string> = {};
+    for (const field of declaration[2]!.matchAll(/^\s*(\w+)[^\n`]*`([^`]+)`/gm)) {
+      const tag = field[2]!;
+      const number = /\bprotobuf:"[^,]+,(\d+),/.exec(tag)?.[1];
+      const name = /\bjson:"([^",]*)/.exec(tag)?.[1] ?? field[1]!;
+      if (number !== undefined) fields[number] = name;
+    }
+    result[declaration[1]!] = fields;
+  }
+  for (const reference of source.matchAll(/^type (\w+) (\w+)\.(\w+)\s*$/gm)) {
+    result[reference[1]!] = { '@': `${imports[reference[2]!]}.${reference[3]}` };
+  }
+  return result;
+}
+
 // Official source files at the same module pin as kubectl and command metadata.
 const pins: Record<string, string> = {
   'api/core/v1': 'dd6cf89d7df51a09d62b9c57f645c90956195df301c3c62d204b569821599502',
@@ -54,7 +78,7 @@ for (const [name, digest] of Object.entries(pins)) {
   if (contract) {
     const filename = join(cache, `k8s.io/${module}@v0.32.2`, ...path, contract[0]);
     if (createHash('sha256').update(readFileSync(filename)).digest('hex') !== contract[1]) throw new Error(`Unreviewed JSON contract: ${name}`);
-    const mapping = JSON.parse(execFileSync('go', ['run', 'scripts/protobuf-json.go', '--', filename], { encoding: 'utf8' })) as Record<string, Record<string, string>>;
+    const mapping = jsonContract(readFileSync(filename, 'utf8'));
     for (const [type, fields] of Object.entries(mapping)) contracts[`k8s.io.${name.replaceAll('/', '.')}.${type}`] = fields;
   }
 }

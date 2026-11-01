@@ -95,6 +95,10 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
     const existing = objects.get(target);
     const scale = (object: ObjectBody): ObjectBody => ({ apiVersion: 'autoscaling/v1', kind: 'Scale', metadata: object.metadata, spec: { replicas: object.spec.replicas }, status: { replicas: object.spec.replicas, selector: 'app=selected' } });
     if (request.method === 'GET') {
+      if (mode === 'absent-eviction' && target === `${core}/pods/pod-a`) {
+        objects.delete(target);
+        return status('NotFound', 404);
+      }
       if (mode === 'create-after-preflight' && target === `${core}/configmaps/absent` && !existing) {
         objects.set(target, doc('v1', 'ConfigMap', 'absent', ns, { data: { value: 'other-actor' } }));
         return status('NotFound', 404);
@@ -214,6 +218,44 @@ export async function checkMutations({ run, check, environment, directory, reque
     objects.get(`${core}/configmaps/selected`)!.metadata.resourceVersion = 'changed';
     const result = await run(['confirm', saved.request, '--digest', saved.digest]);
     assert.equal((decode(result.stdout) as any).error.code, 'PREVIEW_STALE'); assert.equal(effects.length, 0);
+  });
+  await test('R9-absent-delete-refused', async () => {
+    const before = structuredClone([...objects]);
+    const result = await run(['prepare', '--', 'delete', 'configmap', 'absent', '-n', ns]);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as any).error.code, 'PREVIEW_TARGET_ABSENT');
+    assert.equal(effects.length, 0);
+    assert.deepEqual([...objects], before);
+  });
+  await test('R9-absent-replace-refused', async () => {
+    const before = structuredClone([...objects]);
+    const file = join(directory, 'manifest.json');
+    writeFileSync(file, JSON.stringify({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'absent', namespace: ns }, data: { value: 'replacement' } }));
+    const result = await run(['prepare', '--', 'replace', '-f', file, '-n', ns, '--validate=false']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as any).error.code, 'PREVIEW_TARGET_ABSENT');
+    assert.equal(effects.length, 0);
+    assert.deepEqual([...objects], before);
+  });
+  await test('R9-absent-eviction-refused', async () => {
+    const decoy = structuredClone(objects.get(`${core}/pods/pod-b`));
+    mode = 'absent-eviction';
+    const result = await run(['prepare', '--', 'drain', 'b3-node', '--force', '--ignore-daemonsets']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as any).error.code, 'PREVIEW_TARGET_ABSENT');
+    assert.equal(effects.length, 0);
+    assert.deepEqual(objects.get(`${core}/pods/pod-b`), decoy);
+    assert.equal(objects.get('/api/v1/nodes/b3-node')!.spec.unschedulable, false);
+  });
+  await test('R12-compact-secret-last-applied-refused', async () => {
+    const secret = objects.get(`${core}/secrets/selected`)!;
+    const payload = 'c3ludGhldGljLWxhc3QtYXBwbGllZC1zZWNyZXQ=';
+    secret.metadata.annotations = { 'kubectl.kubernetes.io/last-applied-configuration': JSON.stringify({ apiVersion: 'v1', kind: 'Secret', metadata: { name: 'selected', namespace: ns }, data: { 'api-key': payload } }) };
+    const result = await run(['apply', 'view-last-applied', 'secret', 'selected', '-n', ns, '-o', 'json']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as any).error.code, 'CAPABILITY_UNAVAILABLE');
+    assert(!`${result.stdout}${result.stderr}`.includes(payload));
+    assert.equal(requests.length, 0);
   });
   for (const [name, args, target, expected] of [
     ['AC-014-merge', ['patch', 'cm', 'selected', '-n', ns, '--type=merge', '-p', '{"data":{"value":"after"}}'], `${core}/configmaps/selected`, 'after'],

@@ -222,7 +222,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       const logs = await invoke([...invocation.argv, ...(flags.has('tail') ? [] : ['--tail=100']), ...(flags.has('limit-bytes') ? [] : ['--limit-bytes=65536'])], 'text') as string;
       return { ...provenance, logs, complete: false, truncated: Buffer.byteLength(logs) >= Number(flags.get('limit-bytes') ?? 65536), bound: 'tail and byte limits; snapshot only' };
     }
-    if (['describe', 'explain', 'rollout history', 'rollout status', 'apply view-last-applied'].includes(command)) return { ...provenance, text: await invoke(invocation.argv, 'text'), complete: false, bound: 'execution and byte limits' };
+    if (['describe', 'explain', 'rollout history', 'rollout status'].includes(command)) return { ...provenance, text: await invoke(invocation.argv, 'text'), complete: false, bound: 'execution and byte limits' };
     const core = await raw('/api');
     const groups = await raw('/apis');
     if (!validCore(core) || !validGroups(groups) || groups.groups.some(group => !group.versions.some(version => version.groupVersion === group.preferredVersion.groupVersion) || group.versions.some(version => !version.groupVersion.startsWith(`${group.name}/`)))) throw new Failure('UPSTREAM_INVALID', 'API discovery returned an invalid envelope.');

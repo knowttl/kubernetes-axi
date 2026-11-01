@@ -144,7 +144,7 @@ export function parse(args: string[]): Invocation {
       };
       if (Object.hasOwn(allowed, command.path)) {
         for (const name of flags.keys()) if (!allowed[command.path]!.includes(name)) throw new Failure('USAGE', `--${name} requires native -- ${command.path} for upstream semantics.`, 2);
-      } else if (!['logs', 'describe', 'explain', 'rollout history', 'rollout status', 'apply view-last-applied'].includes(command.path) && !['clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Use native -- for this upstream read.');
+      } else if (!['logs', 'describe', 'explain', 'rollout history', 'rollout status'].includes(command.path) && !['clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Use native -- for this upstream read.');
       const maxArgs = command.path === 'get' ? 2 : command.path.startsWith('top ') ? 1 : command.path === '' || command.path === 'version' || command.path.startsWith('api-') ? 0 : undefined;
       if (maxArgs !== undefined && (positionals.length > maxArgs || (command.path === 'get' && positionals.length === 0))) throw new Failure('USAGE', 'Supply one resource type and at most one resource name.', 2);
       if (command.path === 'get' && flags.has('output') && flags.get('output') !== 'json') throw new Failure('USAGE', 'Compact reads support -o json; use native -- for other output formats.', 2);

@@ -276,8 +276,9 @@ export async function mutationSession(configFile: string, invocation: Invocation
           const selected = await remember(target);
           if (selected.collection) throw new Failure('USAGE', 'Use delete <type> --all or a selector so preparation freezes individual targets.', 2);
           const object = selected.objects[0];
+          if (!object && !(method === 'POST' && !url.pathname.endsWith('/eviction') || method === 'PATCH' && contentType.includes('apply-patch'))) throw new Failure('PREVIEW_TARGET_ABSENT', 'Destructive operations require an existing target with UID and resourceVersion; prepare a new request after selecting an existing object.');
           if (method === 'DELETE' || target !== url.pathname && url.pathname.endsWith('/eviction')) {
-            const options = { ...(method === 'POST' ? (body as Document).deleteOptions as Record<string, unknown> : body as Record<string, unknown>), preconditions: object && { uid: object.uid, resourceVersion: object.version } };
+            const options = { ...(method === 'POST' ? (body as Document).deleteOptions as Record<string, unknown> : body as Record<string, unknown>), preconditions: { uid: object!.uid, resourceVersion: object!.version } };
             delete (options as Record<string, unknown>).dryRun;
             payload = method === 'POST' ? { ...(body as object), deleteOptions: options } : options;
           } else if (object && method === 'PATCH' && contentType.includes('json-patch')) {
