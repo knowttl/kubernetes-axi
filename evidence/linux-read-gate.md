@@ -21,4 +21,4 @@ No real cluster, credentials or developer kubeconfig were used.
 The observed operating system was Linux x86_64 on kernel `6.6.87.2-microsoft-standard-WSL2`, with Node `24.14.0`.
 WSL supplies Linux evidence only.
 Native Windows remains pending and has no simulated pass.
-See [README.md](../README.md#build-and-verification) for verification commands, prerequisites and pending-result semantics.
+See [README.md](../README.md#development) for verification commands, prerequisites and pending-result semantics.
