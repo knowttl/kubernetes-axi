@@ -1,7 +1,7 @@
 # kubernetes-axi
 
 An agent-facing TypeScript CLI that runs pinned kubectl with an isolated identity.
-The standalone package implements B1.1, B2.1 through B2.4, and B3.1/B3.2: bounded reads, generated command policy, isolated identities and confirmed resource mutations.
+The standalone package implements B1.1, B2.1 through B2.4, and B3.1 through B3.4: bounded reads, generated command policy, isolated identities, confirmed resource mutations, bounded execution and private token acquisition.
 The opt-in B1.2 verification journey exercises version and pod reads through a frozen local Artium fixture.
 The Linux portion of B1.3 is covered; native Windows execution and ACL conformance remain pending.
 Complete command coverage and live commissioning remain later tasks.

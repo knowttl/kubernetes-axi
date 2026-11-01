@@ -191,6 +191,13 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       if (invocation.workflow?.kind === 'confirm' && !session.argv || session.prepared) return await session.finish();
       await writePrivate(config, JSON.stringify(session.config));
       const args = [...(session.argv ?? invocation.argv)];
+      if (session.rawPath) {
+        // RequestURI replaces the configured prefix, so the raw URI must carry it.
+        for (let index = 0; index < args.length; index++) {
+          if (args[index] === '--raw') args[++index] = session.rawPath;
+          else if (args[index]!.startsWith('--raw=')) args[index] = `--raw=${session.rawPath}`;
+        }
+      }
       if (invocation.workflow && !session.argv) {
         if (!invocation.flags.has('raw') && invocation.command.flags.some(flag => flag.name === 'dry-run')) args.push('--dry-run=server');
         if (invocation.command.flags.some(flag => flag.name === 'wait')) args.push('--wait=false');

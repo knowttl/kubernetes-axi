@@ -5,7 +5,7 @@ import { readFile, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fstatSync, writeSync } from 'node:fs';
+import { fstatSync, writeFileSync } from 'node:fs';
 import { Ajv } from 'ajv';
 import { configPath } from './credentials.js';
 import { Failure } from './errors.js';
@@ -100,7 +100,7 @@ function operation(method: string, path: string): string {
 }
 
 export async function mutationSession(configFile: string, invocation: Invocation, namespace: string, redactor: Redactor, signal: AbortSignal, compatibleVersion: (value: unknown) => void, nativeBinding?: string): Promise<{
-  config: object; argv?: string[]; prepared?: boolean; finish: (success?: boolean) => Promise<object>; close: () => Promise<void>;
+  config: object; argv?: string[]; rawPath?: string; prepared?: boolean; finish: (success?: boolean) => Promise<object>; close: () => Promise<void>;
 }> {
   const config = JSON.parse(await readFile(configFile, 'utf8')) as Config;
   const cluster = config.clusters[0]!.cluster;
@@ -221,7 +221,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
           if (typeof token === 'string') redactor.register(token);
           if (reply.status >= 300 || typeof token !== 'string' || !token || typeof status?.expirationTimestamp !== 'string' || Date.parse(status.expirationTimestamp) <= Date.now()) throw new Failure('CREDENTIAL_ACQUISITION_FAILED', 'The API did not issue a valid bounded credential.');
           if (signal.aborted) throw new Failure('CANCELLED', 'Credential delivery was cancelled.');
-          writeSync(invocation.credentialFd!, token + '\n');
+          writeFileSync(invocation.credentialFd!, token + '\n');
           result.upstreamStatus = reply.status;
           result.outcome = 'delivered';
           saved.state = 'complete';
@@ -397,6 +397,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
   if (!address || typeof address === 'string') throw new Failure('CONFIG_INVALID', 'Cannot establish the private operation channel.');
   return {
     ...(execution ? { prepared: true } : {}),
+    ...(invocation.flags.has('raw') ? { rawPath: `/${capability}${invocation.flags.get('raw')}` } : {}),
     config: { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'selected', cluster: { server: `http://127.0.0.1:${address.port}/${capability}` } }], users: [{ name: 'selected', user: {} }], contexts: [{ name: config['current-context'] ?? 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': config['current-context'] ?? 'selected' },
     finish: async (success = true) => {
       if (failure) throw failure;
