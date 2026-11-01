@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
 import { mutationFixture, checkMutations } from './b3.ts';
+import { remoteFixture, checkRemote } from './remote.ts';
 
 const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
@@ -61,6 +62,7 @@ const server = createServer({ key: readFileSync(join(directory, 'server.key')), 
     send(envelope);
   };
   identities.push(request.headers.authorization ?? '');
+  if (remoteFixture(request, response)) return;
   if (!['synthetic-selected-token', ...helperTokens].some(token => request.headers.authorization === `Bearer ${token}`)) return send({ status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } });
   if (variant === 'native-prefix' && !requests.at(-1)!.startsWith(nativePrefix + '/') && path.startsWith('/api/v1/namespaces/synthetic-b3/configmaps')) {
     if (request.method !== 'GET') rootDecoy.data.value = 'wrong-cluster-write';
@@ -466,6 +468,7 @@ try {
   });
   }
   await checkMutations({ run, check, environment, directory, requests });
+  await checkRemote({ server, run, check, environment, directory, requests, cli });
   await check('R6-native-prefix-all-operation-paths', async () => local(async () => {
     variant = 'native-prefix'; environment.KUBERNETES_AXI_READ_ONLY = 'false';
     const settings = structuredClone(nativeSettings);
@@ -504,9 +507,11 @@ try {
   }));
 } finally {
   server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
-  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4', 'B3.1', 'B3.2'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
+  console.log(JSON.stringify({ tasks: ['B2.1', 'B2.2', 'B2.3', 'B2.4', 'B3.1', 'B3.2', 'B3.3', 'B3.4'], outcome: process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
     packageSha256: createHash('sha256').update(readFileSync(join(directory, packed[0].filename))).digest('hex'),
     kubectlPins: JSON.parse(readFileSync(join(installed, 'kubectl-pins.json'), 'utf8')),
-    publicPaths: ['installed compact CLI', 'installed native kubectl route'], network: 'isolated Linux network namespace; loopback only', fixtureHashes: hashes, cases, pending: ['Artium journeys require the separate opt-in verifier', 'native Windows commissioning'] }, null, 2));
+    publicPaths: ['installed compact CLI', 'installed native kubectl route'], network: 'isolated Linux network namespace; loopback only', fixtureHashes: hashes, cases,
+    nativeWriteObserver: process.env.KUBERNETES_AXI_TEST_WRITE_OBSERVER_SHA256 ?? 'not supplied',
+    pending: ['Artium journeys and real credential-store observation require the separate opt-in verifier', ...(process.env.KUBERNETES_AXI_TEST_WRITE_OBSERVER ? [] : ['B3.4 native write observation requires a pinned strace binary']), 'native Windows commissioning'] }, null, 2));
   rmSync(directory, { recursive: true, force: true });
 }

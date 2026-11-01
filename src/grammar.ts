@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { Failure } from './errors.js';
 import { metadataSha256 } from './metadata-pin.js';
+import { routeEffect } from './route-policy.js';
 
 export interface Flag { name: string; short: string; type: string; default: string; noOpt: string; usage: string; effect: string }
 export interface Command { path: string; aliases: string[]; flags: Flag[]; use: string; description: string; effect: string; operations?: string[]; compatibilityLimit?: string }
@@ -16,6 +17,7 @@ export interface Invocation {
   profile?: string;
   nativeConfig?: string;
   trustExec: boolean;
+  credentialFd?: number;
   command: Command;
   argv: string[];
   positionals: string[];
@@ -28,12 +30,18 @@ export function parse(args: string[]): Invocation {
   if (createHash('sha256').update(bytes).digest('hex') !== metadataSha256 || metadata.version !== 'v1.32.2') {
     throw new Failure('METADATA_STALE', 'Rebuild reviewed command metadata for the installed kubectl pin.');
   }
-  const own: { config?: string; profile?: string; nativeConfig?: string; trustExec: boolean } = { trustExec: false };
+  const own: { config?: string; profile?: string; nativeConfig?: string; trustExec: boolean; credentialFd?: number } = { trustExec: false };
   const argv: string[] = [];
   let native = false;
   let workflow: Invocation['workflow'];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
+    if (arg === '--credential-fd' || arg.startsWith('--credential-fd=')) {
+      const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : args[++index] ?? '';
+      if (!/^(?:[3-9]|[1-9][0-9]+)$/.test(value) || own.credentialFd !== undefined) throw new Failure('USAGE', 'Supply --credential-fd once with an inherited private pipe descriptor of at least 3.', 2);
+      own.credentialFd = Number(value);
+      continue;
+    }
     if (argv.length === 0 && ['prepare', 'preview', 'confirm', 'server-dry-run'].includes(arg) && args[index + 1] === '--help' && index + 2 === args.length) {
       const uses: Record<string, string> = { prepare: 'prepare -- <Kubernetes mutation>', preview: 'preview <request-key>', confirm: 'confirm <request-key> --digest <preview-digest>', 'server-dry-run': 'server-dry-run -- <Kubernetes mutation>' };
       return { ...own, native: false, command: { path: arg, aliases: [], flags: [], use: uses[arg]!, description: 'Prepare frozen targets, preview them offline, confirm their exact digest, or explicitly request server dry run.', effect: arg === 'preview' ? 'localRead' : 'clusterWrite' }, argv: [], positionals: [], flags: new Map(), help: true, home: false };
@@ -69,6 +77,7 @@ export function parse(args: string[]): Invocation {
       own[key] = value;
     } else argv.push(arg);
   }
+  if (own.credentialFd !== undefined) throw new Failure('USAGE', '--credential-fd is only available before confirm.', 2);
   const localCommand = argv.filter(arg => !['--help', '-h'].includes(arg)).join(' ');
   if (['auth status', 'profile list', 'config path', 'doctor'].includes(localCommand)) {
     if (own.nativeConfig || own.trustExec) throw new Failure('USAGE', 'Use native -- for native configuration diagnostics.', 2);
@@ -115,6 +124,20 @@ export function parse(args: string[]): Invocation {
   if (command.path === '' && positionals.length) throw new Failure('USAGE', 'Unknown command. Run kubernetes-axi --help.', 2);
   if (!command.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The command has no reviewed effect classification.');
   if (!help) {
+    const guarded = ['exec', 'attach', 'create token'].includes(command.path);
+    if (flags.has('raw')) {
+      const effect = routeEffect(command.path === 'get' ? 'GET' : command.path === 'delete' ? 'DELETE' : command.path === 'replace' ? 'PUT' : 'POST', flags.get('raw')!);
+      if (effect !== 'read') requireWrites();
+      if (!['read', 'clusterWrite'].includes(effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `Raw ${effect} routes require the corresponding explicit guarded command.`);
+      if (/\/secrets(?:\/|\?|$)/.test(flags.get('raw')!)) throw new Failure('CREDENTIAL_OUTPUT_REFUSED', 'Use compact get secrets for metadata.');
+    }
+    if (command.path === 'debug' && flags.get('attach') !== 'false') throw new Failure('LOCAL_TERMINAL_REQUIRED', 'Use debug --attach=false to prepare its create or patch effects; interactive debug requires a local terminal.');
+    if (guarded) {
+      requireWrites();
+      if (!workflow || workflow.kind !== 'prepare') throw new Failure('PREVIEW_REQUIRED', 'Use prepare -- <command>, preview <request-key>, then confirm <request-key> --digest <digest>.');
+      if (command.path === 'create token' && !/^(true|1)$/i.test(process.env.KUBERNETES_AXI_ACQUIRE_CREDENTIAL ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Token issuance requires KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true and a private delivery pipe on confirmation.');
+      if (flags.get('tty') === 'true' || flags.get('stdin') === 'true') throw new Failure('LOCAL_TERMINAL_REQUIRED', 'Interactive execution requires a local terminal; this route supports bounded non-interactive execution only.');
+    }
     if (native && ['get', 'describe'].includes(command.path) && positionals.some((value, index) => (index === 0 || value.includes('/')) && value.split(',').some(resource => /^secrets?(?:$|[/.])/i.test(resource)))) throw new Failure('CREDENTIAL_OUTPUT_REFUSED', 'Use compact get secrets for metadata; public native Secret output is unavailable.');
     if (own.nativeConfig && ['config set', 'config set-credentials', 'config view'].includes(command.path)) throw new Failure('USAGE', 'Raw native credential inspection and credential argv writes are unavailable.', 2);
     if (command.compatibilityLimit) throw new Failure('NOT_YET_SUPPORTED_STAGED', command.compatibilityLimit);
@@ -125,16 +148,18 @@ export function parse(args: string[]): Invocation {
       const flag = command.flags.find(flag => flag.name === name)!;
       if (!flag.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The flag has no reviewed effect classification.');
       if (flag.effect === 'stream') continue;
-      const writeInput = workflow && ['prepare', 'server-dry-run'].includes(workflow.kind) && (flag.effect === 'fileRead' && ['filename', 'patch-file'].includes(flag.name) || flag.effect === 'clusterWrite' && ['dry-run', 'server-side', 'force-conflicts', 'force', 'prune', 'prune-allowlist'].includes(flag.name));
-      if (!(own.nativeConfig && flag.name === 'context') && !writeInput && !['argument', 'presentation'].includes(flag.effect)) throw new Failure('USAGE', `--${flag.name} is unavailable under the isolated bounded-read policy (${flag.effect}).`, 2);
+      const writeInput = workflow && ['prepare', 'server-dry-run'].includes(workflow.kind) && (flag.effect === 'fileRead' && ['filename', 'patch-file'].includes(flag.name) || flag.effect === 'clusterWrite' && (['dry-run', 'server-side', 'force-conflicts', 'force', 'prune', 'prune-allowlist'].includes(flag.name) || command.path === 'debug' && flag.name === 'profile'));
+      const boundedExecution = (guarded || command.path === 'debug') && ['stdin', 'tty', 'attach'].includes(name) && flags.get(name) === 'false';
+      const raw = name === 'raw' && (command.path === 'get' || Boolean(workflow) && command.effect === 'clusterWrite');
+      if (!(own.nativeConfig && flag.name === 'context') && !raw && !writeInput && !boundedExecution && !['argument', 'presentation'].includes(flag.effect)) throw new Failure('USAGE', `--${flag.name} is unavailable under the isolated bounded-read policy (${flag.effect}).`, 2);
       if (flag.name === 'output' && /file[=\s]|template-file/.test(flags.get(flag.name)!)) throw new Failure('USAGE', 'File templates require a later local-file capability.', 2);
     }
     if (command.effect === 'clusterWrite') {
       requireWrites();
       if (!workflow) throw new Failure('PREVIEW_REQUIRED', 'Use prepare -- <command>, preview <request-key>, then confirm <request-key> --digest <digest>.');
       if (flags.has('dry-run')) throw new Failure('USAGE', 'Use server-dry-run -- <command> for server validation, or prepare -- <command> for a frozen request.', 2);
-    } else if (workflow) throw new Failure('USAGE', 'Preparation and server dry run require a resource mutation command.', 2);
-    if (!(own.nativeConfig && native && command.path.startsWith('config ')) && !['read', 'local', 'clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `The ${command.effect} capability is not available in this milestone.`);
+    } else if (workflow && !guarded) throw new Failure('USAGE', 'Preparation and server dry run require a resource mutation command.', 2);
+    if (!(own.nativeConfig && native && command.path.startsWith('config ')) && !guarded && !['read', 'local', 'clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', `The ${command.effect} capability is not available in this milestone.`);
     if (['wait', 'events'].includes(command.path)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bounded event reads use get events; wait and streaming sessions require a later capability.');
     if (!native) {
       const allowed: Record<string, string[]> = {
@@ -144,7 +169,7 @@ export function parse(args: string[]): Invocation {
       };
       if (Object.hasOwn(allowed, command.path)) {
         for (const name of flags.keys()) if (!allowed[command.path]!.includes(name)) throw new Failure('USAGE', `--${name} requires native -- ${command.path} for upstream semantics.`, 2);
-      } else if (!['logs', 'describe', 'explain', 'rollout history', 'rollout status'].includes(command.path) && !['clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Use native -- for this upstream read.');
+      } else if (!guarded && !['logs', 'describe', 'explain', 'rollout history', 'rollout status'].includes(command.path) && !['clusterWrite', 'authorization'].includes(command.effect)) throw new Failure('CAPABILITY_UNAVAILABLE', 'Use native -- for this upstream read.');
       const maxArgs = command.path === 'get' ? 2 : command.path.startsWith('top ') ? 1 : command.path === '' || command.path === 'version' || command.path.startsWith('api-') ? 0 : undefined;
       if (maxArgs !== undefined && (positionals.length > maxArgs || (command.path === 'get' && positionals.length === 0))) throw new Failure('USAGE', 'Supply one resource type and at most one resource name.', 2);
       if (command.path === 'get' && flags.has('output') && flags.get('output') !== 'json') throw new Failure('USAGE', 'Compact reads support -o json; use native -- for other output formats.', 2);

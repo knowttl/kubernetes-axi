@@ -90,7 +90,7 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
   void (async () => {
     const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
-    const subresource = path.endsWith('/scale') || path.endsWith('/approval') || path.endsWith('/eviction');
+    const subresource = path.endsWith('/scale') || path.endsWith('/approval') || path.endsWith('/eviction') || path.endsWith('/ephemeralcontainers');
     const target = subresource ? path.slice(0, path.lastIndexOf('/')) : path;
     const existing = objects.get(target);
     const scale = (object: ObjectBody): ObjectBody => ({ apiVersion: 'autoscaling/v1', kind: 'Scale', metadata: object.metadata, spec: { replicas: object.spec.replicas }, status: { replicas: object.spec.replicas, selector: 'app=selected' } });
@@ -187,6 +187,38 @@ export async function checkMutations({ run, check, environment, directory, reque
     environment.KUBERNETES_AXI_READ_ONLY = 'true';
     const result = await run(['prepare', '--', 'create', 'namespace', 'b3-created']);
     assert.equal((decode(result.stdout) as any).error.code, 'READ_ONLY'); assert.equal(requests.length, 0); assert.equal(effects.length, 0);
+  });
+  for (const [name, args, method, path, target] of [
+    ['AC-018-debug-create', ['debug', 'pod-a', '-n', ns, '--image=synthetic:debug', '--copy-to=debug-copy', '--container=debugger', '--attach=false', '--', 'true'], 'POST', `${core}/pods`, `${core}/pods/debug-copy`],
+    ['AC-018-debug-patch', ['debug', 'pod-a', '-n', ns, '--image=synthetic:debug', '--container=debugger', '--attach=false', '--', 'true'], 'PATCH', `${core}/pods/pod-a/ephemeralcontainers`, `${core}/pods/pod-a`],
+  ] as const) await test(name, async () => {
+    const decoy = structuredClone(objects.get(`${core}/pods/pod-b`));
+    const saved = await approved([...args]);
+    assert.equal(effects.length, 0, 'Debug preparation must not create or patch upstream');
+    assert.equal((await confirm(saved)).state, 'complete');
+    assert.deepEqual(effects.map(effect => ({ method: effect.method, path: effect.path })), [{ method, path }]);
+    assert.equal(objects.get(target)!.spec[method === 'POST' ? 'containers' : 'ephemeralContainers'].at(-1).name, 'debugger');
+    assert.deepEqual(objects.get(`${core}/pods/pod-b`), decoy);
+  });
+  await test('AC-029-raw-read-and-mutation', async () => {
+    const read = await run(['native', '--', 'get', `--raw=${core}/configmaps/selected`]);
+    assert.equal(read.code, 0, read.stdout + read.stderr);
+    assert.equal(JSON.parse(read.stdout).data.value, 'before');
+    const file = join(directory, 'raw-configmap.json');
+    writeFileSync(file, JSON.stringify({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'raw-created', namespace: ns }, data: { value: 'raw' } }));
+    const saved = await approved(['create', `--raw=${core}/configmaps`, '-f', file]);
+    assert.equal(effects.length, 0);
+    assert.equal((await confirm(saved)).state, 'complete');
+    assert.equal(objects.get(`${core}/configmaps/raw-created`)!.data.value, 'raw');
+  });
+  for (const args of [
+    ['native', '--', 'get', `--raw=${core}/pods/pod-a/proxy/api/v1/pods`],
+    ['prepare', '--', 'create', `--raw=${core}/pods/pod-a/proxy/api/v1/configmaps`, '-f', '/unopened.json'],
+    ['native', '--', 'get', `--raw=${core}/pods/pod-a/exec?command=true`],
+    ['prepare', '--', 'apply', '-k', '/unopened'],
+    ['server-dry-run', '--', 'kustomize', '--enable-alpha-plugins'],
+  ]) await test(`AC-029-guard:${args.join(' ')}`, async () => {
+    const result = await run(args); assert.notEqual(result.code, 0); assert.equal(requests.length, 0); assert.equal(effects.length, 0);
   });
   await test('AC-012-prepare-preview-confirm-once', async () => {
     const saved = await prepare(['create', 'configmap', 'created', '-n', ns, '--from-literal=value=after']);

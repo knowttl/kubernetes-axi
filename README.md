@@ -256,7 +256,7 @@ Local previews do not validate server admission.
 
 The workflow supports create, replace, client/server apply, merge/strategic/JSON patch, deletion, rollout changes, scaling, autoscaling, node cordon/uncordon/taint/drain, certificate approval/denial, labels, annotations, set, run, expose and disruption budgets.
 Resource names must be explicit; generated names cannot be bound to a stable preview.
-Caller-selected Kustomize helpers, arbitrary programs, interactive sessions and credential overrides remain unavailable.
+Caller-selected Kustomize helpers, local programs, plugins, interactive sessions and credential overrides remain unavailable.
 Rollout history and bounded status use the read path; status requires `--watch=false`.
 Authorization and identity reviews use their own non-persistent POST APIs and permissions, even in read-only mode.
 A successful identity review grants no data permissions.
@@ -269,6 +269,44 @@ Run `python3 scripts/verify.py task B3.1 --mode offline --pack evidence` or `B3.
 Artium journeys remain opt-in via `--artium <frozen-checkout>` and require an exact matching package pin.
 Native Windows mutation commissioning remains pending.
 The frozen Artium fixture owns hosted profile injection and role policy; it is local integration evidence, not a claim of released Artium support.
+
+### Bounded execution and private token acquisition
+
+Non-interactive `exec` and `attach` use the same prepare, preview and confirm workflow.
+Preparation freezes the named pod, container and exact command argument sequence without opening a stream.
+Confirmation checks the selected identity, cluster and pod snapshot before invoking pinned kubectl.
+The private gateway supports WebSocket GET and kubectl's SPDY fallback, preserves separate stdout/stderr, and returns the remote exit code.
+Both operations require `KUBERNETES_AXI_READ_ONLY=false`.
+TTY and stdin requests return `LOCAL_TERMINAL_REQUIRED`; interactive workflows require trusted kubectl in a local terminal.
+`debug --attach=false` prepares its named create or ephemeral-container patch through the mutation policy.
+Helper-backed mutations and execution remain refused.
+
+```sh
+kubernetes-axi --profile <name> prepare -- exec <pod> -n <namespace> -c <container> -- printf '%s' repeated repeated
+kubernetes-axi --profile <name> preview <request-key>
+kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>
+```
+
+Raw reads are classified by their API route, including nested proxy routes and query-based watches.
+Raw execution, token issuance and proxy connections cannot bypass their explicit capability boundaries.
+Raw resource mutations still require preparation and confirmation.
+Local rendering and plugin execution are explicitly classified and refused, including during preparation.
+
+Native `create token` is an explicit acquisition flow.
+Enable `KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true` in addition to writes and prepare `create token <service-account> --duration=10m -n <namespace>`.
+Durations must be positive and at most one hour.
+The issuing parent process supplies a private inherited pipe as descriptor 3 or higher, then invokes `--credential-fd <fd> confirm <request-key> --digest <preview-digest>`.
+The pipe must differ from stdout/stderr; regular files are refused before issuance.
+The returned token is registered for redaction before one-time private delivery.
+There is no token lookup, stored credential, artifact, or reusable delivery reference.
+The channel ends with the bounded invocation; cancellation, expiry and failed delivery retain no token.
+The recipient owns subsequent use after explicit delivery.
+Request files contain the approved TokenRequest specification and outcome, never the issued token.
+Hosted admission still denies ungranted native scale, exec and token commands before forwarding.
+
+To observe native writes throughout issuance and delivery, supply a verified `strace` binary using `KUBERNETES_AXI_TEST_WRITE_OBSERVER` and its SHA-256 using `KUBERNETES_AXI_TEST_WRITE_OBSERVER_SHA256`.
+Observer output stays in memory on a separate private pipe.
+Absent observation is pending evidence and cannot establish B3.4 memory-only custody.
 
 ## Explicit native identity
 

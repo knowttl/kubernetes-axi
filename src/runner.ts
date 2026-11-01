@@ -173,7 +173,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       return result;
     }
     if (invocation.nativeConfig) {
-      const loaded = await nativeConfig(binary, invocation.nativeConfig, flags.get('context'), directory, invocation.trustExec, redactor, cancellation.signal, invocation.command.effect === 'clusterWrite');
+      const loaded = await nativeConfig(binary, invocation.nativeConfig, flags.get('context'), directory, invocation.trustExec, redactor, cancellation.signal, Boolean(invocation.workflow) || invocation.command.effect === 'clusterWrite');
       close = loaded.close;
       namespace = flags.get('namespace') ?? loaded.namespace;
       source = loaded.source;
@@ -188,14 +188,18 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       const session = await mutationSession(config, invocation, namespace, redactor, cancellation.signal, compatibleVersion, binding);
       const closeIdentity = close;
       close = async () => { await session.close(); await closeIdentity(); };
-      if (invocation.workflow?.kind === 'confirm') return await session.finish();
+      if (invocation.workflow?.kind === 'confirm' && !session.argv || session.prepared) return await session.finish();
       await writePrivate(config, JSON.stringify(session.config));
-      const args = [...invocation.argv];
-      if (invocation.workflow) {
-        if (invocation.command.flags.some(flag => flag.name === 'dry-run')) args.push('--dry-run=server');
+      const args = [...(session.argv ?? invocation.argv)];
+      if (invocation.workflow && !session.argv) {
+        if (!invocation.flags.has('raw') && invocation.command.flags.some(flag => flag.name === 'dry-run')) args.push('--dry-run=server');
         if (invocation.command.flags.some(flag => flag.name === 'wait')) args.push('--wait=false');
       }
       const result = await invoke(args, 'native') as NativeOutput;
+      if (session.argv) {
+        await session.finish(result.exitCode === 0);
+        return result;
+      }
       if (invocation.command.effect === 'authorization') {
         const review = await session.finish(result.exitCode === 0);
         process.exitCode = result.exitCode;

@@ -5,6 +5,7 @@ import { readFile, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fstatSync, writeSync } from 'node:fs';
 import { Ajv } from 'ajv';
 import { configPath } from './credentials.js';
 import { Failure } from './errors.js';
@@ -12,6 +13,8 @@ import { requireWrites } from './grammar.js';
 import type { Invocation } from './grammar.js';
 import type { Redactor } from './redaction.js';
 import { privateDirectory, readPrivate, writePrivate } from './private-files.js';
+import { remoteSession } from './remote-session.js';
+import { routeEffect } from './route-policy.js';
 
 const execute = promisify(execFile);
 interface Metadata { name?: string; namespace?: string; uid?: string; resourceVersion?: string; continue?: string }
@@ -19,7 +22,8 @@ interface Document { apiVersion?: string; kind?: string; metadata?: Metadata; it
 interface Reply { status: number; body: Document }
 interface Snapshot { path: string; objects: { name: string; namespace: string; uid: string; version: string }[]; absent: boolean; collection: boolean }
 interface Change { operation: string; method: string; path: string; target: string; contentType: string; body: unknown; wire: string; inputBase64: string }
-interface Plan { version: 1; key: string; binding: string; command: string; namespace: string; awaitDeletion: boolean; snapshots: Snapshot[]; changes: Change[]; display: object }
+interface Execution { argv: string[]; target: string; route: string; query: string }
+interface Plan { version: 1; key: string; binding: string; command: string; namespace: string; awaitDeletion: boolean; snapshots: Snapshot[]; changes: Change[]; display: object; execution?: Execution }
 interface Saved { plan: Plan; digest: string; state: 'prepared' | 'running' | 'complete' | 'failed'; results: Result[] }
 interface Result { operation: string; method: string; path: string; outcome: string; upstreamStatus?: number; observed?: Snapshot['objects'] }
 interface Config {
@@ -78,7 +82,7 @@ function snapshot(path: string, reply: Reply): Snapshot {
     if (!validDocument(item) || !item.metadata?.name || !item.metadata.uid || !item.metadata.resourceVersion) throw new Failure('UPSTREAM_INVALID', 'Mutation targets require a name, UID and resourceVersion.');
     const route = new URL(path, 'http://local').pathname;
     const namespace = /\/namespaces\/([^/]+)\//.exec(route)?.[1];
-    const name = route.replace(/\/(?:scale|approval)$/, '').split('/').at(-1);
+    const name = route.replace(/\/(?:scale|approval|ephemeralcontainers)$/, '').split('/').at(-1);
     if (namespace && item.metadata.namespace !== namespace || !collection && item.metadata.name !== name) throw new Failure('UPSTREAM_INVALID', 'The snapshot does not match the selected name and namespace.');
     return { name: item.metadata.name, namespace: item.metadata.namespace ?? '', uid: item.metadata.uid, version: item.metadata.resourceVersion };
   }).sort((a, b) => `${a.namespace}/${a.name}`.localeCompare(`${b.namespace}/${b.name}`));
@@ -96,7 +100,7 @@ function operation(method: string, path: string): string {
 }
 
 export async function mutationSession(configFile: string, invocation: Invocation, namespace: string, redactor: Redactor, signal: AbortSignal, compatibleVersion: (value: unknown) => void, nativeBinding?: string): Promise<{
-  config: object; finish: (success?: boolean) => Promise<object>; close: () => Promise<void>;
+  config: object; argv?: string[]; prepared?: boolean; finish: (success?: boolean) => Promise<object>; close: () => Promise<void>;
 }> {
   const config = JSON.parse(await readFile(configFile, 'utf8')) as Config;
   const cluster = config.clusters[0]!.cluster;
@@ -104,9 +108,12 @@ export async function mutationSession(configFile: string, invocation: Invocation
   let count = 0;
   let bytes = 0;
   const deadline = Date.now() + 15_000;
+  let credentialIssuance = invocation.command.path === 'create token';
   const upstream = async (method: string, path: string, body?: unknown, contentType = 'application/json', wire?: string): Promise<Reply> => {
     if (++count > 256 || Date.now() >= deadline) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded operation exhausted its request or time budget.');
     if (!/^\/(?:api(?:\/|\?|$)|apis(?:\/|\?|$)|version(?:\?|$)|openapi\/)/.test(path) || path.includes('..') || /\/\/|%2f|%2e/i.test(path)) throw new Failure('USAGE', 'Only discovered Kubernetes API routes are supported.', 2);
+    const effect = path.startsWith('/openapi/') ? 'read' : routeEffect(method, path);
+    if (['connection', 'execution'].includes(effect) || effect === 'credentials' && !credentialIssuance) throw new Failure('EFFECT_UNCLASSIFIED', 'This route requires its explicit bounded execution or acquisition capability.');
     let token = user.token;
     let cert = user['client-certificate-data'] ? Buffer.from(user['client-certificate-data'], 'base64').toString() : undefined;
     let key = user['client-key-data'] ? Buffer.from(user['client-key-data'], 'base64').toString() : undefined;
@@ -149,9 +156,23 @@ export async function mutationSession(configFile: string, invocation: Invocation
   if (workflow?.kind === 'confirm') {
     requireWrites();
     const { saved, directory, signingKey } = await savedRequest(invocation);
+    credentialIssuance = saved.plan.changes.some(change => change.operation === 'OP-030');
     if ((saved.plan.changes.some(change => change.operation === 'OP-016') || saved.plan.changes.filter(change => change.method === 'DELETE').length > 1) && !/^(true|1)$/i.test(process.env.KUBERNETES_AXI_COLLECTION_DELETE ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.');
     const binding = mac(signingKey, nativeBinding ?? config);
     if (saved.digest !== workflow.digest || saved.plan.binding !== binding) throw new Failure('PREVIEW_MISMATCH', 'Select the original cluster and identity and supply the exact preview digest.');
+    if (saved.plan.changes.some(change => change.operation === 'OP-030')) {
+      if (!/^(true|1)$/i.test(process.env.KUBERNETES_AXI_ACQUIRE_CREDENTIAL ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Token issuance requires KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true.');
+      const fd = invocation.credentialFd;
+      if (fd === undefined) throw new Failure('PRIVATE_DELIVERY_REQUIRED', 'Supply --credential-fd <inherited-private-pipe> on confirmation.');
+      try {
+        const sink = fstatSync(fd);
+        if (!sink.isFIFO() && !sink.isSocket()) throw new Error('not a pipe');
+        for (const publicFd of [1, 2]) {
+          const stream = fstatSync(publicFd);
+          if (sink.dev === stream.dev && sink.ino === stream.ino) throw new Error('public stream');
+        }
+      } catch { throw new Failure('PRIVATE_DELIVERY_REQUIRED', 'The credential sink must be an inherited private pipe distinct from public output.'); }
+    }
     const report = (): object => ({ request: saved.plan.key, state: saved.state, complete: saved.state === 'complete', results: saved.results });
     const persist = async (): Promise<void> => {
       await writePrivate(join(directory, 'request.json'), JSON.stringify(saved));
@@ -177,6 +198,16 @@ export async function mutationSession(configFile: string, invocation: Invocation
     }
     saved.state = 'running';
     await persist();
+    if (saved.plan.execution) {
+      const execution = saved.plan.execution;
+      const session = await remoteSession(config, saved.plan.namespace, execution.target, execution.route, execution.query, signal);
+      return { ...session, argv: execution.argv, finish: async (success = true) => {
+        saved.state = success ? 'complete' : 'failed';
+        saved.results.push({ operation: 'OP-017', method: 'CONNECT', path: execution.route, outcome: success ? 'complete' : 'failed' });
+        await persist();
+        return report();
+      } };
+    }
     let pending = false;
     for (const change of saved.plan.changes) {
       const result: Result = { operation: change.operation, method: change.method, path: change.path, outcome: 'uncertain' };
@@ -184,10 +215,23 @@ export async function mutationSession(configFile: string, invocation: Invocation
       await persist();
       try {
         const reply = await upstream(change.method, change.path, change.body, change.contentType, change.wire);
+        if (change.operation === 'OP-030') {
+          const status = reply.body.status as { token?: unknown; expirationTimestamp?: unknown } | undefined;
+          const token = status?.token;
+          if (typeof token === 'string') redactor.register(token);
+          if (reply.status >= 300 || typeof token !== 'string' || !token || typeof status?.expirationTimestamp !== 'string' || Date.parse(status.expirationTimestamp) <= Date.now()) throw new Failure('CREDENTIAL_ACQUISITION_FAILED', 'The API did not issue a valid bounded credential.');
+          if (signal.aborted) throw new Failure('CANCELLED', 'Credential delivery was cancelled.');
+          writeSync(invocation.credentialFd!, token + '\n');
+          result.upstreamStatus = reply.status;
+          result.outcome = 'delivered';
+          saved.state = 'complete';
+          await persist();
+          return { config, finish: async () => report(), close: async () => {} };
+        }
         result.upstreamStatus = reply.status;
         result.outcome = reply.status < 300 ? 'committed' : 'failed';
         if (result.outcome === 'committed' && change.method !== 'DELETE' && !change.path.split('?')[0]!.endsWith('/eviction')) {
-          const named = change.target.replace(/\/(?:scale|approval)$/, '').split('/').at(-1);
+          const named = change.target.replace(/\/(?:scale|approval|ephemeralcontainers)$/, '').split('/').at(-1);
           const metadata = reply.body.metadata;
           if (!metadata || metadata.name !== named || !metadata.uid || !metadata.resourceVersion) result.outcome = 'uncertain';
         }
@@ -227,6 +271,27 @@ export async function mutationSession(configFile: string, invocation: Invocation
     snapshots.set(path, selected);
     return selected;
   };
+  let execution: Execution | undefined;
+  if (['exec', 'attach'].includes(invocation.command.path)) {
+    if (user.exec) throw new Failure('CAPABILITY_UNAVAILABLE', 'Helper-backed execution requires a reviewed containment boundary.');
+    const name = invocation.positionals[0]?.replace(/^pods?\//, '') ?? '';
+    if (!/^[a-z0-9][a-z0-9.-]*$/.test(name)) throw new Failure('USAGE', 'Bounded execution requires one named pod.', 2);
+    const target = `/api/v1/namespaces/${namespace}/pods/${name}`;
+    const pod = await upstream('GET', target);
+    await remember(target, pod);
+    const containers = (pod.body.spec as { containers?: { name: string }[] } | undefined)?.containers ?? [];
+    const container = invocation.flags.get('container') ?? containers[0]?.name;
+    if (!container || !containers.some(item => item.name === container)) throw new Failure('USAGE', 'Select a container in the named pod.', 2);
+    const query = new URLSearchParams({ container, stdout: 'true', stderr: 'true', timeout: '5s' });
+    if (invocation.command.path === 'exec') {
+      const delimiter = invocation.argv.indexOf('--');
+      if (delimiter < 0 || delimiter === invocation.argv.length - 1) throw new Failure('USAGE', 'Use exec <pod> -- <command> [arguments].', 2);
+      for (const arg of invocation.argv.slice(delimiter + 1)) query.append('command', arg);
+    }
+    execution = { argv: [...invocation.argv], target, route: `${target}/${invocation.command.path}`, query: query.toString() };
+    // Container flags must precede the remote command delimiter.
+    execution.argv.splice(invocation.argv.indexOf('--') < 0 ? execution.argv.length : invocation.argv.indexOf('--'), 0, '--namespace', namespace, '--container', container);
+  }
   const server = createServer((incoming, response) => {
     void (async () => {
       try {
@@ -261,8 +326,13 @@ export async function mutationSession(configFile: string, invocation: Invocation
           const contentType = protobuf ? 'application/json' : String(incoming.headers['content-type'] ?? 'application/json');
           let target = url.pathname;
           if (target.endsWith('/approval')) target = target.slice(0, -'/approval'.length);
+          if (target.endsWith('/ephemeralcontainers')) target = target.slice(0, -'/ephemeralcontainers'.length);
           let payload = body;
-          if (method === 'POST') {
+          const acquisition = invocation.command.path === 'create token';
+          if (acquisition) {
+            if (method !== 'POST' || !new RegExp(`^/api/v1/namespaces/${namespace}/serviceaccounts/[a-z0-9][a-z0-9.-]*/token$`).test(url.pathname)) throw new Failure('EFFECT_UNCLASSIFIED', 'Only the selected TokenRequest endpoint is permitted.');
+            target = url.pathname.slice(0, -'/token'.length);
+          } else if (method === 'POST') {
             if (!validDocument(body) || !body.metadata?.name) throw new Failure('USAGE', 'Preparation requires explicit resource names; generateName is not supported.', 2);
             target = target.endsWith('/eviction') ? target.slice(0, -'/eviction'.length) : `${target}/${body.metadata.name}`;
           }
@@ -277,7 +347,10 @@ export async function mutationSession(configFile: string, invocation: Invocation
           if (selected.collection) throw new Failure('USAGE', 'Use delete <type> --all or a selector so preparation freezes individual targets.', 2);
           const object = selected.objects[0];
           if (!object && !(method === 'POST' && !url.pathname.endsWith('/eviction') || method === 'PATCH' && contentType.includes('apply-patch'))) throw new Failure('PREVIEW_TARGET_ABSENT', 'Destructive operations require an existing target with UID and resourceVersion; prepare a new request after selecting an existing object.');
-          if (method === 'DELETE' || target !== url.pathname && url.pathname.endsWith('/eviction')) {
+          if (acquisition) {
+            const spec = (body as { spec?: { expirationSeconds?: number } }).spec;
+            if (!spec || typeof spec.expirationSeconds !== 'number' || spec.expirationSeconds <= 0 || spec.expirationSeconds > 3600) throw new Failure('USAGE', 'Request a positive token duration of at most one hour.', 2);
+          } else if (method === 'DELETE' || target !== url.pathname && url.pathname.endsWith('/eviction')) {
             const options = { ...(method === 'POST' ? (body as Document).deleteOptions as Record<string, unknown> : body as Record<string, unknown>), preconditions: { uid: object!.uid, resourceVersion: object!.version } };
             delete (options as Record<string, unknown>).dryRun;
             payload = method === 'POST' ? { ...(body as object), deleteOptions: options } : options;
@@ -303,12 +376,12 @@ export async function mutationSession(configFile: string, invocation: Invocation
             collection.searchParams.set('fieldSelector', `metadata.name=${object!.name}`);
             path = collection.pathname + collection.search;
           }
-          const change = { operation: bulk ? 'OP-016' : operation(method, url.pathname), method, path, target, contentType: method === 'POST' ? 'application/json' : contentType, body: payload, wire: JSON.stringify(payload), inputBase64: input.toString('base64') };
+          const change = { operation: acquisition ? 'OP-030' : bulk ? 'OP-016' : operation(method, url.pathname), method, path, target, contentType: method === 'POST' ? 'application/json' : contentType, body: payload, wire: JSON.stringify(payload), inputBase64: input.toString('base64') };
           changes.push(change);
           {
             // Preparation records intent only. It never sends a mutation upstream.
             const before = object ? await upstream('GET', target) : undefined;
-            reply = { status: method === 'POST' ? 201 : 200, body: method === 'DELETE' ? { kind: 'Status', apiVersion: 'v1', status: 'Success' } :
+            reply = { status: method === 'POST' ? 201 : 200, body: acquisition ? { kind: 'TokenRequest', apiVersion: 'authentication.k8s.io/v1', status: { token: 'preparation-only', expirationTimestamp: new Date(Date.now() + 60_000).toISOString() } } : method === 'DELETE' ? { kind: 'Status', apiVersion: 'v1', status: 'Success' } :
               validDocument(body) && body.kind ? body : before?.body ?? { kind: 'Status', apiVersion: 'v1', status: 'Success' } };
           }
         }
@@ -323,6 +396,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
   const address = server.address();
   if (!address || typeof address === 'string') throw new Failure('CONFIG_INVALID', 'Cannot establish the private operation channel.');
   return {
+    ...(execution ? { prepared: true } : {}),
     config: { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'selected', cluster: { server: `http://127.0.0.1:${address.port}/${capability}` } }], users: [{ name: 'selected', user: {} }], contexts: [{ name: config['current-context'] ?? 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': config['current-context'] ?? 'selected' },
     finish: async (success = true) => {
       if (failure) throw failure;
@@ -340,7 +414,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
       const signingKey = randomBytes(32).toString('hex');
       const display = redactor.value({ command: invocation.command.path, namespace, selected: [...snapshots.values()], changes: changes.map(change => ({ operation: change.operation, method: change.method, path: change.path, change: publicBody(change.body, /\/secrets(?:\/|\?|$)/.test(change.path)) })) }) as object;
       const plan: Plan = { version: 1, key, binding: mac(signingKey, nativeBinding ?? config), namespace, command: invocation.command.path,
-        awaitDeletion: invocation.command.path === 'drain' || invocation.command.path === 'delete' && invocation.flags.get('wait') !== 'false', snapshots: [...snapshots.values()], changes, display };
+        awaitDeletion: invocation.command.path === 'drain' || invocation.command.path === 'delete' && invocation.flags.get('wait') !== 'false', snapshots: [...snapshots.values()], changes, display: execution ? { ...display, execution } : display, ...(execution ? { execution } : {}) };
       const saved: Saved = { plan, digest: mac(signingKey, plan), state: 'prepared', results: [] };
       await writePrivate(join(directory, 'key'), signingKey);
       await writePrivate(join(directory, 'request.json'), JSON.stringify(saved));

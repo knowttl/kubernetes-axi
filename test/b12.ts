@@ -10,6 +10,7 @@ import { mock } from 'node:test';
 import type { TLSSocket } from 'node:tls';
 import { pathToFileURL } from 'node:url';
 import { decode } from '@toon-format/toon';
+import { deliverCredential } from './private-delivery.ts';
 
 const [artiumArg, packArg, digest, installed] = process.argv.slice(2);
 assert(artiumArg && packArg && digest && installed, 'Expected Artium checkout, evidence pack, package digest and standalone installation');
@@ -38,12 +39,20 @@ const [{ createApp }, { Runner }, { Audit }, { openStore, createCredentialStore 
 ]);
 const provider = new EnvironmentKeyProvider({ ARTIUM_AXI_MASTER_KEY: Buffer.alloc(32, 7).toString('base64') });
 const db = openStore(join(root, 'data', 'artium.db'), provider);
+db.exec('CREATE TEMP TABLE credential_mutations (operation TEXT NOT NULL)');
+for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%credential%'").all() as { name: string }[]) {
+  for (const operation of ['INSERT', 'UPDATE', 'DELETE']) db.exec(`CREATE TEMP TRIGGER observe_${name}_${operation} AFTER ${operation} ON main.${name} BEGIN INSERT INTO credential_mutations VALUES ('${operation}'); END`);
+}
+const storeMutations = () => db.prepare('SELECT operation FROM credential_mutations').all();
 const fixture = async (name: string) => JSON.parse(await readFile(join(pack, 'fixtures', name), 'utf8')).body;
 const version = await fixture('P-001.json');
 const pods = await fixture('P-006.json');
 const namespace = pods.items[0].metadata.namespace as string;
 const podPath = `/api/v1/namespaces/${namespace}/pods`;
 const secretPath = `/api/v1/namespaces/${namespace}/secrets`;
+const accountPath = `/api/v1/namespaces/${namespace}/serviceaccounts/selected`;
+const issued = 'synthetic-issued-private-host+/=';
+let issuance: 'valid' | 'expired' | 'hold' = 'valid';
 const discovery: Record<string, object> = {
   '/api': { kind: 'APIVersions', apiVersion: 'v1', versions: ['v1'], serverAddressByClientCIDRs: [] },
   '/apis': { kind: 'APIGroupList', apiVersion: 'v1', groups: [] },
@@ -65,7 +74,14 @@ const api = createServer({ key: await readFile(join(root, 'server.key')), cert: 
   const identity = socket.authorized && socket.getPeerCertificate().subject.CN === 'synthetic-client'
     ? 'certificate' : (request.headers.authorization ?? '').replace(/^Bearer /, '');
   requests.push({ path, identity });
-  if (identity !== selected && identity !== 'certificate') { response.writeHead(401).end(); return; }
+  if (identity !== selected && identity !== 'certificate' && !(identity === issued && request.method === 'GET' && path === podPath)) { response.writeHead(401).end(); return; }
+  if (path === accountPath && request.method === 'GET') {
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ apiVersion: 'v1', kind: 'ServiceAccount', metadata: { name: 'selected', namespace, uid: 'synthetic-account', resourceVersion: '1' } })); return;
+  }
+  if (path === accountPath + '/token' && request.method === 'POST') {
+    if (issuance === 'hold') { events.emit('token-held'); return; }
+    response.writeHead(201, { 'content-type': 'application/json' }).end(JSON.stringify({ apiVersion: 'authentication.k8s.io/v1', kind: 'TokenRequest', status: { token: issued, expirationTimestamp: new Date(Date.now() + (issuance === 'expired' ? -1000 : 600_000)).toISOString() } })); return;
+  }
   if (block && path === podPath) { events.emit('held'); return; }
   if (request.method !== 'GET') {
     response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ kind: 'Status', apiVersion: 'v1', status: 'Success' }));
@@ -122,6 +138,10 @@ try {
   db.exec("DELETE FROM role_tools; INSERT INTO role_tools VALUES ('synthetic-role', 'kubernetes-axi'); UPDATE tools SET enabled = 1 WHERE name = 'kubernetes-axi'");
   store.replaceCredential('kubernetes-axi', { origin, auth: 'token', namespace,
     certificateAuthority: ca, token: selected }, 0, 'synthetic-development-user', Date.now());
+  assert.deepEqual(storeMutations(), [{ operation: 'INSERT' }], 'Real encrypted credential insertion must be observed');
+  db.exec('SAVEPOINT observer_probe; UPDATE credentials SET ciphertext=ciphertext; DELETE FROM credentials');
+  assert.deepEqual(storeMutations(), [{ operation: 'INSERT' }, { operation: 'UPDATE' }, { operation: 'DELETE' }], 'Transient encrypted updates and removals must be observed');
+  db.exec('ROLLBACK TO observer_probe; RELEASE observer_probe');
   // Periodic health probes share the runner; custody assertions concern only each explicit call.
   mock.timers.enable({ apis: ['setInterval'] });
   const url = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -221,6 +241,54 @@ try {
     assert.deepEqual(requests, []);
     assert.deepEqual(await readdir(calls), []);
   });
+  if (process.env.KUBERNETES_AXI_TEST_WRITE_OBSERVER) await check('CC-013', 'OP-030', 'native private channel with real encrypted-store and native-write observation', async () => {
+    const nativeRoot = join(root, 'native-channel');
+    await mkdir(nativeRoot, { mode: 0o700 });
+    const config = join(nativeRoot, 'config.json');
+    await privateFile(config, JSON.stringify({ version: 1, defaultProfile: 'issuer', profiles: { issuer: { origin, auth: 'token', namespace, certificateAuthority: ca, token: { env: 'ISSUER_TOKEN' } } } }));
+    const nativeEnvironment = { ...environment, HOME: nativeRoot, XDG_CONFIG_HOME: nativeRoot, TMPDIR: nativeRoot,
+      KUBERNETES_AXI_CONFIG: config, ISSUER_TOKEN: selected, KUBERNETES_AXI_READ_ONLY: 'false', KUBERNETES_AXI_ACQUIRE_CREDENTIAL: 'true' };
+    const executable = join(installed, 'bin/kubernetes-axi.js');
+    const native = async (args: string[], env = nativeEnvironment) => {
+      const child = spawn(process.execPath, [executable, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const chunks: Buffer[] = [];
+      child.stdout.on('data', (bytes: Buffer) => chunks.push(bytes));
+      child.stderr.resume();
+      const [code] = await once(child, 'close');
+      const output = Buffer.concat(chunks).toString();
+      assert(!output.includes(issued));
+      return { code, output };
+    };
+    const confirmation = async () => {
+      const prepared = await native(['prepare', '--', 'create', 'token', 'selected', '--duration=10m']);
+      assert.equal(prepared.code, 0, prepared.output);
+      const { request } = decode(prepared.output) as { request: string };
+      const preview = await native(['preview', request]); assert.equal(preview.code, 0, preview.output);
+      return ['confirm', request, '--digest', (decode(preview.output) as { digest: string }).digest];
+    };
+    const before = storeMutations();
+    const args = await confirmation();
+    requests.length = 0;
+    const other = await native(args, { ...nativeEnvironment, ISSUER_TOKEN: competing });
+    assert.match(other.output, /PREVIEW_MISMATCH/); assert.deepEqual(requests, []);
+    const delivered = await deliverCredential(executable, nativeEnvironment, args, issued);
+    assert.equal(delivered.code, 0, delivered.stdout); assert.equal(delivered.credential, issued + '\n');
+    assert.equal(await upstream(delivered.credential.trim(), podPath), 200);
+    assert.equal((await deliverCredential(executable, nativeEnvironment, args, issued)).credential, '', 'No caller can retrieve a delivered token');
+    const expiredArgs = await confirmation(); issuance = 'expired';
+    const expired = await deliverCredential(executable, nativeEnvironment, expiredArgs, issued);
+    assert.notEqual(expired.code, 0); assert.equal(expired.credential, '');
+    issuance = 'valid'; const cancelledArgs = await confirmation(); issuance = 'hold';
+    const cancelled = await deliverCredential(executable, nativeEnvironment, cancelledArgs, issued, stop => { events.once('token-held', stop); });
+    assert.notEqual(cancelled.code, 0); assert.equal(cancelled.credential, ''); issuance = 'valid';
+    assert.deepEqual(storeMutations(), before, 'No issued credential may enter or transiently leave any real encrypted credential table');
+    for (const entry of await readdir(root, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const bytes = await readFile(join(entry.parentPath, entry.name));
+      for (const value of [issued, encodeURIComponent(issued), Buffer.from(issued).toString('base64')]) assert(!bytes.includes(Buffer.from(value)), 'Issued credential found in retained storage');
+    }
+    assert(!auditLines.join('').includes(issued));
+  });
   for (const flag of ['config', 'profile', 'native-config', 'trust-exec', 'kubeconfig', 'server', 'context', 'user', 'token', 'as', 'as-group', 'as-uid',
     'certificate-authority', 'client-certificate', 'client-key', 'insecure-skip-tls-verify']) {
     for (const override of [[`--${flag}`, 'synthetic-override'], [`--${flag}=synthetic-override`]]) {
@@ -278,6 +346,7 @@ try {
   assert(!journal.includes(privateKey) && !journal.includes(Buffer.from(privateKey).toString('base64')));
   assert.equal(await readFile(join(root, 'writes.log'), 'utf8').catch(() => ''), '');
   console.log(JSON.stringify({ outcome: 'pass', cases, publicPath: 'real Artium CLI -> local server -> installed package -> pinned kubectl -> TLS fake',
+    credentialCustody: process.env.KUBERNETES_AXI_TEST_WRITE_OBSERVER ? { nativeWriteObserverSha256: process.env.KUBERNETES_AXI_TEST_WRITE_OBSERVER_SHA256, storeObserver: 'SQLite triggers on real encrypted credential tables', delivery: 'explicit native private pipe; hosted native acquisition remains denied' } : { outcome: 'pending', prerequisite: 'pinned native write observer' },
     policyScope: 'Pod-read-only host admission denies native scale, execution and token issuance before forwarding, independently of package write enablement and broader synthetic upstream permissions', packageSha256: digest }));
 } finally {
   await app.close();
