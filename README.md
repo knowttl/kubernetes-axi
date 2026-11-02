@@ -79,9 +79,9 @@ Reads:
 - Selectors require compact lists without a resource name: `get <resource>` accepts `-l` / `--selector` and `--field-selector`, while `top node` and `top pod` accept `-l` / `--selector`.
   Combining a name with a selector returns `USAGE` (exit 2) before any API request; omit the name to filter a list, or omit the selector for a named read.
 - Pods report name, namespace and phase, nodes report readiness, deployments report desired and available replicas, and `top` aggregates CPU and memory.
-- Use `get <resource> [name] -o json` for compact JSON.
+- Use `get <resource> [name] --json` or the existing `get <resource> [name] -o json` for compact JSON.
   It serializes the same bounded summary as TOON, not the upstream object.
-  `--json` is not supported; text reads such as `logs` and `describe` retain their text envelopes.
+  `--json` also serializes structured help and errors; text reads such as `logs` and `describe` retain their text envelopes in JSON.
 - Pass `get <resource> --continue '<token>'` to fetch the next bounded page, keeping the original namespace and selectors.
   Each page remains limited to 100 objects; an expired token requires a fresh list.
 - `describe`, `explain`, `rollout history` and `rollout status <resource> --watch=false` wrap upstream text with provenance and `complete: false`.
