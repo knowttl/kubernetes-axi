@@ -139,7 +139,7 @@ Generated grammar:
   Namespace and object names such as `token`, `proxy`, `portforward`, `exec`, `attach` and `watch` do not by themselves require special capabilities; ordinary reads and mutations keep their usual policy.
   Raw execution, token issuance and proxy connections cannot bypass their explicit capability boundaries.
   Raw resource mutations still require preparation and confirmation.
-- Secrets in output are redacted, including literal, escaped, URI, form and base64 forms.
+- Secrets in text output are redacted, including literal, escaped, URI, form and base64 forms.
   Public native Secret reads are refused; `get secrets` returns metadata only.
 - Runtime digest checks refuse stale generated metadata before credential resolution or API calls.
 
@@ -202,6 +202,9 @@ Used with an Artium host that has the Kubernetes session integration (a frozen l
   Copy needs `tar` in the container.
 - The session API at `/v1/tools/kubernetes-axi/sessions` provides start, status, output and cancel, with bounded stdin, followed logs and pod watches.
   Every operation checks the caller, login family, current operation grant and credential revision.
+- Hosted byte output releases safe bytes without waiting for more output or stream closure.
+  Only trailing bytes that could complete a registered credential form remain buffered until further output resolves the match or the stream ends.
+  A completed match, including one split across chunks, stops the session with `CREDENTIAL_OUTPUT_REFUSED` before that credential is emitted.
 - Port-forward sessions freeze a named pod and up to eight numeric remote ports.
   Continued client input after a remote-initiated half-close is not supported; see [issue 26](https://github.com/knowttl/kubernetes-axi/issues/26).
 

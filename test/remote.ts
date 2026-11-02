@@ -15,11 +15,13 @@ import { dirname } from 'node:path';
 
 const core = '/api/v1/namespaces/synthetic-remote';
 const token = 'synthetic-issued-only-in-memory+/=';
-export const executionToken = 'synthetic-execution-token+/(opaque)~!=';
+export const executionToken = 'synthetic-synthetic-execution-token+/(opaque)~!=';
 let revision = '1';
 let fallback = false;
 let tokenMode: 'valid' | 'expired' | 'hold' = 'valid';
 let tokenReached: (() => void) | undefined;
+let logOutput: { initial: Buffer; response?: ServerResponse } | undefined;
+let executionOutput: { initial: Buffer; socket?: Duplex } | undefined;
 const forwarded: { method: string; path: string; query: string }[] = [];
 let portForward: ((incoming: IncomingMessage, socket: Duplex, head: Buffer) => void) | undefined;
 export function portForwardFixture(handler: typeof portForward): void { portForward = handler; }
@@ -35,6 +37,11 @@ export function remoteFixture(incoming: IncomingMessage, response: ServerRespons
   const url = new URL(incoming.url!, 'https://local');
   if (path === `${core}/pods/selected/log`) {
     response.writeHead(200, { 'content-type': 'text/plain' });
+    if (logOutput) {
+      logOutput.response = response;
+      response.write(logOutput.initial);
+      return true;
+    }
     response.write('synthetic followed log line\n'.repeat(8));
     if (url.searchParams.get('follow') !== 'true') response.end();
     return true;
@@ -141,6 +148,10 @@ export async function checkRemote(context: {
     if (incoming.method === 'GET') {
       const accept = createHash('sha1').update(incoming.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
       socket.write(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: v5.channel.k8s.io\r\n\r\n`);
+      if (commands[0] === 'protected-stream' && executionOutput) {
+        executionOutput.socket = socket;
+        socket.write(webSocketFrame(1, executionOutput.initial)); socket.resume(); return;
+      }
       if (commands[0] === 'hold') { socket.write(webSocketFrame(1, 'held')); socket.resume(); return; }
       const tarUpload = JSON.stringify(commands) === JSON.stringify(['tar', 'xf', '-', '-C', '/files']);
       const tarDownload = commands.length === 7 && commands.slice(0, 6).join(' ') === 'tar cf - -C /files --' && /^[a-z0-9.-]+$/.test(commands[6]!);
@@ -210,6 +221,77 @@ export async function checkRemote(context: {
   };
   try {
     environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    await check('issue-27-sparse-output-before-source-EOF', async () => {
+      logOutput = { initial: Buffer.from('ok\n') };
+      const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      const events = new EventEmitter();
+      const stdout: Buffer[] = [];
+      child.on('message', (raw: unknown) => {
+        const event = raw as { event: string; channel: string; base64: string };
+        if (event.event === 'output' && event.channel === 'stdout') { stdout.push(Buffer.from(event.base64, 'base64')); events.emit('stdout'); }
+        events.emit(event.event, raw);
+      });
+      const received = once(events, 'stdout', { signal: AbortSignal.timeout(5000) });
+      const closed = once(child, 'close', { signal: AbortSignal.timeout(15000) });
+      try {
+        child.send({ action: 'start', args: ['logs', 'selected', '-n', 'synthetic-remote', '-c', 'selected-container', '--follow'], timeoutMs: 10000 });
+        await received;
+        assert.deepEqual(Buffer.concat(stdout), Buffer.from('ok\n'));
+        assert.equal(logOutput.response?.writableEnded, false, 'Safe bytes must arrive before the source closes');
+        assert.equal(child.exitCode, null);
+        const failed = once(events, 'failed', { signal: AbortSignal.timeout(5000) });
+        child.kill('SIGTERM');
+        const [failure] = await failed as [{ code: string }];
+        assert.equal(failure.code, 'CANCELLED');
+        await closed;
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; }
+        logOutput.response?.destroy(); logOutput = undefined;
+      }
+    });
+    for (const [form, encoded, prefixLength, continuationStart] of [
+      ['raw', executionToken, 10, 10], ['uri', encodeURIComponent(executionToken), 10, 10],
+      ['form', new URLSearchParams({ value: executionToken }).toString().slice('value='.length), 10, 10],
+      ['base64', Buffer.from(executionToken).toString('base64'), 10, 10],
+      ['overlapping-prefix', executionToken, 20, 10],
+    ] as const) await check(`issue-27-split-credential:${form}`, async () => {
+      const originalToken = environment.SYNTHETIC_TOKEN;
+      environment.SYNTHETIC_TOKEN = executionToken;
+      fallback = false;
+      executionOutput = { initial: Buffer.from('ok\n' + encoded.slice(0, prefixLength)) };
+      const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      const events = new EventEmitter();
+      const stdout: Buffer[] = []; const publicBytes: Buffer[] = [];
+      child.on('message', (raw: unknown) => {
+        const event = raw as { event: string; channel: string; base64: string };
+        if (event.event === 'output') {
+          const bytes = Buffer.from(event.base64, 'base64'); publicBytes.push(bytes);
+          if (event.channel === 'stdout') { stdout.push(bytes); events.emit('stdout'); }
+        }
+        events.emit(event.event, raw);
+      });
+      const received = once(events, 'stdout', { signal: AbortSignal.timeout(5000) });
+      const closed = once(child, 'close', { signal: AbortSignal.timeout(15000) });
+      try {
+        const prepared = once(events, 'prepared', { signal: AbortSignal.timeout(5000) });
+        child.send({ action: 'start', args: ['prepare', '--', 'exec', 'selected', '-n', 'synthetic-remote', '-c', 'selected-container', '--', 'protected-stream'], timeoutMs: 10000 });
+        const [{ preview }] = await prepared as [{ preview: { digest: string } }];
+        child.send({ action: 'confirm', digest: preview.digest });
+        await received;
+        assert.deepEqual(Buffer.concat(stdout), Buffer.from('ok\n'), 'Only safe bytes may leave while a credential prefix is pending');
+        const failed = once(events, 'failed', { signal: AbortSignal.timeout(5000) });
+        executionOutput.socket!.write(webSocketFrame(1, encoded.slice(continuationStart)));
+        const [failure] = await failed as [{ code: string }];
+        assert.equal(failure.code, 'CREDENTIAL_OUTPUT_REFUSED');
+        await closed;
+        assert.deepEqual(Buffer.concat(stdout), Buffer.from('ok\n'));
+        assert.equal(Buffer.concat(publicBytes).includes(Buffer.from(encoded)), false);
+        assert.equal(Buffer.concat(publicBytes).includes(Buffer.from(executionToken)), false);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; }
+        executionOutput.socket?.destroy(); executionOutput = undefined; environment.SYNTHETIC_TOKEN = originalToken;
+      }
+    });
     for (const [operation, container] of [['exec', 'selected-container'], ['attach', 'selected-container'], ['attach', 'terminal-container']] as const) await check(`AC-BYTES-001:session ${operation} ${container} stdin stdout stderr and EOF preserve arbitrary bytes`, async () => {
       const bytes = Buffer.from([0, 255, 254, 128, 10, 13, 0]);
       const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
