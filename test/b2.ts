@@ -557,7 +557,7 @@ try {
       const failure = (decode(result.stdout) as any).error;
       assert.equal(failure.code, 'API_UNAVAILABLE');
       assert.equal(failure.upstreamStatus, 404);
-      assert(requests.includes(nativePrefix + path), JSON.stringify(requests));
+      assert(requests.some(route => new URL(route, 'https://127.0.0.1').pathname === nativePrefix + path), JSON.stringify(requests));
       assert(requests.every(route => route.startsWith(nativePrefix + '/')), JSON.stringify(requests));
     } finally { writeFileSync(nativeFile, JSON.stringify(nativeSettings)); }
   }));
