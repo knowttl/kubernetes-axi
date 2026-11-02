@@ -53,7 +53,7 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run check
+      - run: npm run build
 
       # setup-node writes a placeholder auth token; remove it so npm uses OIDC.
       - name: Enable OIDC trusted publishing
