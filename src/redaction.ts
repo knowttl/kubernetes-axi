@@ -30,14 +30,28 @@ export class Redactor {
   }
 
   byteStream(): { push: (bytes: Buffer) => Buffer; end: () => Buffer } {
-    const patterns = [...this.forms].map(form => Buffer.from(form));
-    const hold = Math.max(0, ...patterns.map(pattern => pattern.length - 1));
+    const patterns = [...this.forms].map(form => {
+      const bytes = Buffer.from(form);
+      const fallback = new Uint32Array(bytes.length);
+      for (let index = 1, matched = 0; index < bytes.length; index++) {
+        while (matched && bytes[index] !== bytes[matched]) matched = fallback[matched - 1]!;
+        if (bytes[index] === bytes[matched]) matched++;
+        fallback[index] = matched;
+      }
+      return { bytes, fallback, matched: 0 };
+    });
     let pending = Buffer.alloc(0);
     return {
       push: bytes => {
         pending = Buffer.concat([pending, bytes]);
-        if (patterns.some(pattern => pending.includes(pattern))) throw new Error('protected binary output');
-        const count = Math.max(0, pending.length - hold);
+        for (const pattern of patterns) for (const byte of bytes) {
+          while (pattern.matched && byte !== pattern.bytes[pattern.matched]) pattern.matched = pattern.fallback[pattern.matched - 1]!;
+          if (byte === pattern.bytes[pattern.matched]) pattern.matched++;
+          if (pattern.matched === pattern.bytes.length) throw new Error('protected binary output');
+        }
+        // Only suffixes that can still complete a protected pattern remain buffered.
+        const hold = Math.max(0, ...patterns.map(pattern => pattern.matched));
+        const count = pending.length - hold;
         const safe = Buffer.from(pending.subarray(0, count));
         pending = Buffer.from(pending.subarray(count));
         return safe;
