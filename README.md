@@ -324,5 +324,5 @@ No `SECURITY.md` exists yet; a reporting policy is pending.
 
 ## License
 
-No `LICENSE` file exists yet; the license is pending.
+kubernetes-axi is released under the MIT license; see [LICENSE](LICENSE).
 The bundled kubectl license is in [third-party/kubectl-LICENSE.txt](third-party/kubectl-LICENSE.txt), and notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

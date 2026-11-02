@@ -2,6 +2,7 @@
   "name": "@knowttl/kubernetes-axi",
   "version": "0.1.1",
   "description": "Agent-facing Kubernetes CLI backed by pinned kubectl",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/knowttl/kubernetes-axi.git"
