@@ -66,7 +66,7 @@ kubernetes-axi explain <resource>
 kubernetes-axi native -- <kubectl arguments>
 ```
 
-Global flags: `--config <absolute-path>`, `--profile <name>`, `--namespace <name>` (`-n`), `--help`.
+Global flags: `--config <absolute-path>`, `--profile <name>`, `--namespace <name>` (`-n`), `--json`, `--help`.
 Inspection commands that need no cluster request: `auth status`, `profile list`, `config path` and `doctor`.
 `doctor` and `auth status` validate local credential configuration and file permissions; `connectivity: not checked` means they do not test server reachability or authentication acceptance.
 With `--native-config`, `doctor` and `auth status` inspect the selected native context, and `config path` lists the native source paths.
@@ -79,9 +79,7 @@ Reads:
 - Selectors require compact lists without a resource name: `get <resource>` accepts `-l` / `--selector` and `--field-selector`, while `top node` and `top pod` accept `-l` / `--selector`.
   Combining a name with a selector returns `USAGE` (exit 2) before any API request; omit the name to filter a list, or omit the selector for a named read.
 - Pods report name, namespace and phase, nodes report readiness, deployments report desired and available replicas, and `top` aggregates CPU and memory.
-- Use `get <resource> [name] -o json` for compact JSON.
-  It serializes the same bounded summary as TOON, not the upstream object.
-  `--json` is not supported; text reads such as `logs` and `describe` retain their text envelopes.
+- See [Output and exit codes](#output-and-exit-codes) for compact JSON and native output formats.
 - Pass `get <resource> --continue '<token>'` to fetch the next bounded page, keeping the original namespace and selectors.
   Each page remains limited to 100 objects; an expired token requires a fresh list.
 - `describe`, `explain`, `rollout history` and `rollout status <resource> --watch=false` wrap upstream text with provenance and `complete: false`.
@@ -268,7 +266,12 @@ Insecure or redirected paths fail before credentials are read.
 
 ## Output and exit codes
 
-- Output is TOON by default; failures print `error:` with a `code` and `message`, and keep the upstream status where available.
+- Output is TOON by default; `--json` serializes the same approved fields, including structured help and errors.
+  Compact JSON preserves the bounded summary rather than the upstream object; text reads such as `logs` and `describe` retain their envelopes.
+  Supply the bare flag once, before a native or workflow `--` separator.
+  Arguments after that separator belong to kubectl or the remote command, including a literal `--json`.
+  Package-version probes (`--version`, `-v`, `-V`) remain plain version text with `--json`.
+  Failures carry `error.code` and `error.message` and keep the upstream status where available.
 - Distinct codes cover missing resources, denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits.
   Read arguments rejected by the API use `BAD_REQUEST`, including invalid containers, unavailable previous logs and malformed selectors.
   Missing execution pods and scale targets use `RESOURCE_NOT_FOUND`.
@@ -283,6 +286,32 @@ Insecure or redirected paths fail before credentials are read.
 - Usage errors exit 2; other failures exit 1.
   Native commands and confirmed execution preserve the upstream process exit status.
 - The verification entry points exit 0 on pass, 1 on failure and 2 when a prerequisite is pending.
+
+| Invocation | Presentation |
+| --- | --- |
+| `get pods` | Compact TOON summary with provenance and page state. |
+| `get pods --json` or `get pods -o json` | JSON encoding of the same compact summary. |
+| `describe pod <name>` | TOON envelope with provenance, upstream `text`, `complete: false` and an execution/byte bound. |
+| `--json describe pod <name>` | JSON encoding of that text envelope. |
+| `native -- describe pod <name>` | Explicit native text output and native stderr. |
+| `native -- get pods -o json` | Explicit upstream JSON, with the upstream resource shape. |
+
+The explicit `native --` route and confirmed exec/attach return upstream output and exit status even when the outer CLI receives `--json`.
+Credential redaction remains in place for every presentation.
+Compact Event, ConfigMap, Secret and custom-resource rows retain identity metadata (`name`, optional `namespace`, and `kind`).
+Use explicit native reads for richer non-secret resource output; public native Secret output remains refused.
+Text envelopes retain conservative `complete: false`; the bound describes the request and byte limits rather than full coverage of related resources.
+Public previews retain zero and null field values alongside the frozen mutation payload so zero-valued intent remains visible.
+
+`auth status` and `doctor` inspect local configuration, credential references and protected-file permissions.
+Their `connectivity: not checked` result makes no claim that the server accepted the identity.
+Use an ordinary bounded read to verify server access.
+Preparation failures expose classified missing-file, missing-target and missing-name errors; unclassified upstream failures use the structured `UPSTREAM_FAILED` diagnostic.
+Native diagnostics preserve repeated discovery output and the upstream exit status after credential redaction.
+Endpoint and identity information can remain in explicitly requested native output.
+Existing refusal codes and exit statuses remain compatible: watch/follow requests use usage refusals, while standalone port forwarding uses the historical `LOCAL_TERMINAL_REQUIRED` capability refusal even in a real terminal.
+Interactive execution and local program execution remain refused before effects.
+Explicit multiple-name deletion, like selector-based collection deletion, requires `KUBERNETES_AXI_COLLECTION_DELETE=true` and confirmation of the frozen targets.
 
 ## Limitations
 

@@ -395,11 +395,11 @@ export async function checkRemote(context: {
     });
     for (const spdy of [false, true]) await check(`AC-017-TRANSPORT:${spdy ? 'SPDY fallback' : 'WebSocket GET'}`, async () => {
       fallback = spdy; forwarded.length = 0;
-      const confirmation = await prepare(['exec', 'selected', '-n', 'synthetic-remote', '-c', 'selected-container', '--', 'printf', 'same', 'same', '', 'last']);
+      const confirmation = await prepare(['exec', 'selected', '-n', 'synthetic-remote', '-c', 'selected-container', '--', 'printf', 'same', '--json', 'same', '', 'last']);
       assert.equal(forwarded.length, 0, 'Preparation opens no stream');
       const result = await run(confirmation);
       assert.equal(result.code, 0, result.stdout + result.stderr);
-      assert.deepEqual(JSON.parse(result.stdout), ['printf', 'same', 'same', '', 'last']);
+      assert.deepEqual(JSON.parse(result.stdout), ['printf', 'same', '--json', 'same', '', 'last']);
       assert.equal(result.stderr, 'diagnostic\n');
       assert.deepEqual(forwarded.map(item => item.method), spdy ? ['GET', 'POST'] : ['GET']);
       assert.equal(new URLSearchParams(forwarded.at(-1)!.query).get('container'), 'selected-container');

@@ -242,7 +242,7 @@ export function commandHelp(command: Command): object {
     ...(['exec', 'attach', 'debug', 'get', 'logs', 'port-forward'].includes(command.path) ? { capabilityBoundary: executionLimit } : {}),
     ...(command.operations ? { operations: command.operations } : {}),
     ...(command.compatibilityLimit ? { compatibilityLimit: command.compatibilityLimit } : {}),
-    flags: [...command.flags.map(flag => ({ name: `--${flag.name}`, short: flag.short ? `-${flag.short}` : '', type: flag.type, default: flag.default })), ...(command.path === 'get' ? [{ name: '--continue', short: '', type: 'string (compact lists only)', default: '' }] : [])],
+    flags: [{ name: '--json', short: '', type: 'bool', default: 'false', scope: 'CLI; before --' }, ...command.flags.map(flag => ({ name: `--${flag.name}`, short: flag.short ? `-${flag.short}` : '', type: flag.type, default: flag.default })), ...(command.path === 'get' ? [{ name: '--continue', short: '', type: 'string (compact lists only)', default: '' }] : [])],
     examples: ['prepare', 'preview', 'confirm', 'server-dry-run'].includes(command.path) ?
       ['kubernetes-axi --profile <name> prepare -- patch deployment <name> --type=merge -p \'{"spec":{"replicas":3}}\'', 'kubernetes-axi --profile <name> preview <request-key>', 'kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>'] :
       ['kubernetes-axi --profile <name> get pods -n <namespace>', 'kubernetes-axi --profile <name> native -- get pods -n <namespace> -o json'],
