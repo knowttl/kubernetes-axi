@@ -543,6 +543,24 @@ try {
     const result = await run([...args]); assert.equal(result.code, 1, result.stdout); assert.equal((decode(result.stdout) as any).error.code, code);
     const native = await run(['native', '--', ...args]); assert.notEqual(native.code, 0); assert(native.stdout || native.stderr);
   });
+  for (const type of ['node', 'pod']) for (const stage of ['discovery', 'resource']) await check(`R1-native-prefix-metrics-${type}-${stage}`, async () => local(async () => {
+    const settings = structuredClone(nativeSettings);
+    settings.clusters[0]!.cluster.server += nativePrefix;
+    writeFileSync(nativeFile, JSON.stringify(settings));
+    const metricsPath = '/apis/metrics.k8s.io/v1beta1';
+    const path = stage === 'discovery' ? metricsPath : `${metricsPath}${type === 'pod' ? '/namespaces/synthetic-space/pods' : '/nodes'}`;
+    override = { path, envelope: fixture('P-009') };
+    try {
+      const result = await run(['--native-config', nativeFile, 'top', type, '-n', 'synthetic-space']);
+      assert.equal(result.code, 1, result.stdout);
+      assert.equal(result.stderr, '');
+      const failure = (decode(result.stdout) as any).error;
+      assert.equal(failure.code, 'API_UNAVAILABLE');
+      assert.equal(failure.upstreamStatus, 404);
+      assert(requests.includes(nativePrefix + path), JSON.stringify(requests));
+      assert(requests.every(route => route.startsWith(nativePrefix + '/')), JSON.stringify(requests));
+    } finally { writeFileSync(nativeFile, JSON.stringify(nativeSettings)); }
+  }));
   for (const name of ['forbidden', 'gone', 'timeout', 'unauthorized', 'expired', 'invalid-json']) await check(`failure-reason:${name}`, async () => {
     override = { path: `/api/v1/namespaces/kube-system/pods/${name}`, envelope: { status: 404, headers: {}, body: {
       kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', message: `pods "${name}" not found`, details: { name, kind: 'pods' }, code: 404,

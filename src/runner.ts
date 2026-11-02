@@ -121,22 +121,22 @@ export async function readCluster(identity: Identity | undefined, invocation: In
   };
   let serverPrefix = '';
   const invoke = async (args: string[], format: 'json' | 'text' | 'native' = 'json'): Promise<unknown> => {
+    const transportArgs = [...args];
     // kubectl RequestURI replaces the configured server path instead of appending it.
     if (serverPrefix) {
-      args = [...args];
-      for (let index = 0; index < args.length && args[index] !== '--'; index++) {
-        if (args[index] === '--raw') args[++index] = serverPrefix + args[index];
-        else if (args[index]!.startsWith('--raw=')) args[index] = `--raw=${serverPrefix}${args[index]!.slice(6)}`;
+      for (let index = 0; index < transportArgs.length && transportArgs[index] !== '--'; index++) {
+        if (transportArgs[index] === '--raw') transportArgs[++index] = serverPrefix + transportArgs[index];
+        else if (transportArgs[index]!.startsWith('--raw=')) transportArgs[index] = `--raw=${serverPrefix}${transportArgs[index]!.slice(6)}`;
       }
     }
     if (format === 'native' && byteExecution) {
-      const exitCode = await byteProcess(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=0', ...args], env, byteExecution, redactor);
+      const exitCode = await byteProcess(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=0', ...transportArgs], env, byteExecution, redactor);
       return { native: true, stdout: '', stderr: '', exitCode };
     }
     if (++requests > 64 || Date.now() >= deadline) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded operation exhausted its request or time budget.');
     let result;
     try {
-      result = await execute(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=5s', ...args], { env, signal: cancellation.signal, timeout: Math.min(10_000, deadline - Date.now()), maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+      result = await execute(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=5s', ...transportArgs], { env, signal: cancellation.signal, timeout: Math.min(10_000, deadline - Date.now()), maxBuffer: 4 * 1024 * 1024, windowsHide: true });
     } catch (error) {
       const failed = error as { stderr?: string; stdout?: string; code?: string | number; killed?: boolean };
       if (failed.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw new Failure('OUTPUT_LIMIT', 'Output exceeded 4 MiB; narrow the selection.', 1, { cause: 'byte_limit' });
