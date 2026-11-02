@@ -12,7 +12,7 @@ import { readFile } from 'node:fs/promises';
 
 const help = {
   description: guidance,
-  commands: ['version', 'get <resource> [name]', 'api-versions', 'api-resources', 'logs <pod>', 'top node', 'top pod', 'describe <resource> <name>', 'explain <resource>', 'rollout history <resource>', 'rollout status <resource> --watch=false', 'auth status', 'profile list', 'config path', 'doctor', 'prepare -- <mutation>', 'preview <request-key>', 'confirm <request-key> --digest <digest>', 'server-dry-run -- <mutation>', 'native -- <arguments>'],
+  commands: ['version', 'get <resource> [name]', 'api-versions', 'api-resources', 'logs <pod>', 'top node', 'top pod', 'describe <resource> <name>', 'explain <resource>', 'rollout history <resource>', 'rollout status <resource> --watch=false', 'auth status', 'profile list', 'config path', 'doctor', 'prepare -- <mutation>', 'preview <request-key>', 'confirm <request-key> --digest <digest> [--context <native-context>]', 'server-dry-run -- <mutation>', 'native -- <arguments>'],
   flags: ['--config <absolute-path>', '--profile <name>', '--namespace <name>', '--native-config <absolute-path|ambient>', '--trust-exec', '--credential-fd <inherited-private-pipe> (confirm only)', '--help'],
   examples: ['kubernetes-axi version --profile <name>', 'kubernetes-axi get pods --profile <name> --namespace <namespace>'],
 };

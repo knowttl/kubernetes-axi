@@ -33,7 +33,7 @@ export async function nativeConfigPaths(selection: string): Promise<string[]> {
   return paths;
 }
 
-export async function nativeConfig(binary: string, selection: string, context: string | undefined, directory: string, trustExec: boolean, redactor: Redactor, signal: AbortSignal, resourceMutation: boolean): Promise<{ config: object; binding: string; source: string; namespace: string; diagnostic: object; close: () => Promise<void> }> {
+export async function nativeConfig(binary: string, selection: string, context: string | undefined, directory: string, trustExec: boolean, redactor: Redactor, signal: AbortSignal, resourceMutation: boolean): Promise<{ config: object; binding: string; source: string; namespace: string; serverPrefix: string; diagnostic: object; close: () => Promise<void> }> {
   const paths = await nativeConfigPaths(selection);
   const merged: Config = { clusters: [], users: [], contexts: [] };
   const origins = new Map<Entry, string>();
@@ -111,6 +111,7 @@ export async function nativeConfig(binary: string, selection: string, context: s
   }
   return {
     binding,
+    serverPrefix: server.pathname.replace(/\/$/, ''),
     diagnostic: { context: name, namespace: selected.namespace ?? 'default', origin: cluster.server, auth: userEntry.user.exec ? 'exec' : user.token ? 'token' : 'certificate', permissions: 'verified' },
     config: { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'selected', cluster }], users: [{ name: 'selected', user }], contexts: [{ name: name!, context: { cluster: 'selected', user: 'selected', namespace: selected.namespace ?? 'default' } }], 'current-context': name },
     source: `native:${paths.join(delimiter)} context:${name}; ambient exception; helper cache owned by helper`, namespace: selected.namespace ?? 'default', close,

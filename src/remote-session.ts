@@ -82,5 +82,5 @@ export async function remoteSession(config: RemoteConfig, namespace: string, tar
     call.setTimeout(5000, () => call.destroy()); call.end();
   });
   return { config: { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'selected', cluster: { server: `http://127.0.0.1:${address.port}/${capability}` } }],
-    users: [{ name: 'selected', user: {} }], contexts: [{ name: 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': 'selected' }, close };
+    users: [{ name: 'selected', user: {} }], contexts: [{ name: config['current-context'] ?? 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': config['current-context'] ?? 'selected' }, close };
 }
