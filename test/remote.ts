@@ -226,7 +226,7 @@ export async function checkRemote(context: {
       const prepared = once(events, 'prepared', { signal: AbortSignal.timeout(15000) });
       const closed = once(child, 'close');
       forwarded.length = 0;
-      child.send({ action: 'start', args: ['prepare', '--', operation, 'selected', '-n', 'synthetic-remote', '-c', container, '-i', ...(operation === 'exec' ? ['--', 'echo-bytes'] : ['--quiet'])], stdinBase64: bytes.toString('base64'), timeoutMs: 10000 });
+      child.send({ action: 'start', args: ['prepare', '--', operation, 'selected', '-n', 'synthetic-remote', '-c', container, '--request-timeout=0', '-i', ...(operation === 'exec' ? ['--', 'echo-bytes'] : ['--quiet'])], stdinBase64: bytes.toString('base64'), timeoutMs: 10000 });
       const [{ preview }] = await prepared as [{ preview: { digest: string } }];
       const exited = once(events, 'exit', { signal: AbortSignal.timeout(15000) });
       child.send({ action: 'confirm', digest: preview.digest });
@@ -272,6 +272,44 @@ export async function checkRemote(context: {
       requests.length = 0;
       const result = await run(['prepare', '--', 'exec', 'selected', '-it', '--', 'true']);
       assert.match(result.stdout, /LOCAL_TERMINAL_REQUIRED/); assert.equal(requests.length, 0);
+    });
+    for (const operation of ['exec', 'attach'] as const) for (const value of ['1s', '0', '6s']) await check(`issue-23-refuse-timeout:${operation}:${value}`, async () => {
+      forwarded.length = 0;
+      const result = await run(['prepare', '--', operation, 'selected', `--request-timeout=${value}`, ...(operation === 'exec' ? ['--', 'true'] : ['--quiet'])]);
+      assert.equal(result.code, 2, result.stdout + result.stderr);
+      assert.equal((decode(result.stdout) as { error: { code: string } }).error.code, 'USAGE');
+      assert.match(result.stdout, /--request-timeout must be 5s/);
+      assert.deepEqual(requests, []);
+      assert.deepEqual(forwarded, []);
+    });
+    for (const operation of ['exec', 'attach'] as const) await check(`issue-23-refuse-hosted-timeout:${operation}`, async () => {
+      const child = spawn(process.execPath, [join(dirname(cli), '../dist/hosted-session.js')], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      const events = new EventEmitter();
+      child.on('message', (raw: unknown) => { const event = raw as { event: string }; events.emit(event.event, raw); });
+      const failed = once(events, 'failed', { signal: AbortSignal.timeout(15000) });
+      const closed = once(child, 'close', { signal: AbortSignal.timeout(15000) });
+      try {
+        child.send({ action: 'start', args: ['prepare', '--', operation, 'selected', '--request-timeout=1s', ...(operation === 'exec' ? ['--', 'true'] : ['--quiet'])], timeoutMs: 10000 });
+        const [failure] = await failed as [{ code: string; message: string }];
+        assert.equal(failure.code, 'USAGE');
+        assert.match(failure.message, /--request-timeout must be 0/);
+        await closed;
+        assert.deepEqual(requests, []);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; }
+      }
+    });
+    for (const spdy of [false, true]) for (const operation of ['exec', 'attach'] as const) await check(`issue-23-supported-timeout:${operation}:${spdy ? 'SPDY' : 'WebSocket'}`, async () => {
+      fallback = spdy; forwarded.length = 0;
+      const confirmation = await prepare([operation, 'selected', '-n', 'synthetic-remote', '-c', 'selected-container', '--request-timeout=5s', ...(operation === 'exec' ? ['--', 'printf', 'same', '--request-timeout=1s', 'same', ''] : ['--quiet'])]);
+      assert.equal(forwarded.length, 0);
+      const result = await run(confirmation);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), operation === 'exec' ? ['printf', 'same', '--request-timeout=1s', 'same', ''] : []);
+      assert.equal(result.stderr, 'diagnostic\n');
+      assert.deepEqual(forwarded.map(item => item.method), spdy ? ['GET', 'POST'] : ['GET']);
+      assert.equal(new URLSearchParams(forwarded.at(-1)!.query).get('timeout'), '5s');
+      assert.equal(new URLSearchParams(forwarded.at(-1)!.query).get('container'), 'selected-container');
     });
     for (const spdy of [false, true]) await check(`AC-017-TRANSPORT:${spdy ? 'SPDY fallback' : 'WebSocket GET'}`, async () => {
       fallback = spdy; forwarded.length = 0;

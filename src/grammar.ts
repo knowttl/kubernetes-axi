@@ -6,6 +6,7 @@ import { metadataSha256, executionLimit } from './metadata-pin.js';
 import { routeEffect } from './route-policy.js';
 
 export interface Flag { name: string; short: string; type: string; default: string; noOpt: string; usage: string; effect: string }
+export const boundedRequestTimeout = '5s';
 export interface Command { path: string; aliases: string[]; flags: Flag[]; use: string; description: string; effect: string; operations?: string[]; compatibilityLimit?: string }
 const bytes = await readFile(new URL('../command-metadata.json', import.meta.url));
 export const metadata = JSON.parse(bytes.toString()) as { version: string; commands: Command[] };
@@ -158,6 +159,8 @@ export function parse(args: string[], session = false): Invocation {
   if (!command.effect) throw new Failure('EFFECT_UNCLASSIFIED', 'The command has no reviewed effect classification.');
   if (!help) {
     if (['exec', 'attach', 'debug'].includes(command.path) && (flags.get('tty') === 'true' || !session && flags.get('stdin') === 'true') || command.path === 'debug' && flags.get('attach') !== 'false' || !session && command.path === 'port-forward') throw new Failure('LOCAL_TERMINAL_REQUIRED', executionLimit);
+    const requestTimeout = session ? '0' : boundedRequestTimeout;
+    if (['exec', 'attach'].includes(command.path) && flags.has('request-timeout') && flags.get('request-timeout') !== requestTimeout) throw new Failure('USAGE', `--request-timeout must be ${requestTimeout} for ${session ? 'hosted' : 'standalone'} exec/attach; omit it to use the supported execution bound.`, 2);
     const guarded = ['exec', 'attach', 'create token', ...(session ? ['port-forward'] : [])].includes(command.path);
     if (flags.has('raw')) {
       const effect = routeEffect(command.path === 'get' ? 'GET' : command.path === 'delete' ? 'DELETE' : command.path === 'replace' ? 'PUT' : 'POST', flags.get('raw')!);

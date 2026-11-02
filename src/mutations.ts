@@ -9,7 +9,7 @@ import { fstatSync, writeFileSync } from 'node:fs';
 import { Ajv } from 'ajv';
 import { configPath } from './credentials.js';
 import { Failure } from './errors.js';
-import { requireWrites } from './grammar.js';
+import { requireWrites, boundedRequestTimeout } from './grammar.js';
 import type { Invocation } from './grammar.js';
 import type { Redactor } from './redaction.js';
 import { privateDirectory, readPrivate, writePrivate } from './private-files.js';
@@ -307,7 +307,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
     const container = invocation.flags.get('container') ?? containers[0]?.name;
     if (!container || !containers.some(item => item.name === container)) throw new Failure('USAGE', 'Select a container in the named pod.', 2);
     const query = new URLSearchParams({ container, stdout: 'true', stderr: 'true' });
-    if (!invocation.session) query.set('timeout', '5s');
+    if (!invocation.session) query.set('timeout', boundedRequestTimeout);
     if (invocation.flags.get('stdin') === 'true') query.set('stdin', 'true');
     if (invocation.command.path === 'exec') {
       const delimiter = invocation.argv.indexOf('--');

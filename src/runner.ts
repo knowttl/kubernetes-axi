@@ -15,7 +15,7 @@ import { nativeConfig, inspectNative } from './native.js';
 import type { Redactor } from './redaction.js';
 import { mutationSession } from './mutations.js';
 import { byteProcess, type ByteExecution } from './byte-process.js';
-import { clientOnly } from './grammar.js';
+import { clientOnly, boundedRequestTimeout } from './grammar.js';
 
 const execute = promisify(execFile);
 const pins = JSON.parse(await readFile(new URL('../kubectl-pins.json', import.meta.url), 'utf8')) as {
@@ -136,7 +136,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     if (++requests > 64 || Date.now() >= deadline) throw new Failure('UPSTREAM_TIMEOUT', 'The bounded operation exhausted its request or time budget.');
     let result;
     try {
-      result = await execute(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=5s', ...transportArgs], { env, signal: cancellation.signal, timeout: Math.min(10_000, deadline - Date.now()), maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+      result = await execute(binary, ['--kubeconfig', config, '--cache-dir', directory, `--request-timeout=${boundedRequestTimeout}`, ...transportArgs], { env, signal: cancellation.signal, timeout: Math.min(10_000, deadline - Date.now()), maxBuffer: 4 * 1024 * 1024, windowsHide: true });
     } catch (error) {
       const failed = error as { stderr?: string; stdout?: string; code?: string | number; killed?: boolean };
       if (failed.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw new Failure('OUTPUT_LIMIT', 'Output exceeded 4 MiB; narrow the selection.', 1, { cause: 'byte_limit' });
