@@ -48,6 +48,8 @@ Running `kubernetes-axi` with no arguments shows the selected source, isolated c
 ## Commands
 
 `kubernetes-axi --help` lists the compact read surface.
+Use `kubernetes-axi help <command>` for command-specific help without credentials or cluster requests, including `help top pod` and `help prepare`.
+Native targets also support `kubernetes-axi native -- help <command>`; inherited flags may precede `help`, as in `kubernetes-axi -n kube-system help get`.
 A bare `--version` prints the package version without loading the command graph.
 Version probes with selection flags, such as `--native-config <path> --version`, also print the package version without loading credentials or contacting the cluster.
 
@@ -74,6 +76,8 @@ Reads:
 
 - Compact reads discover resource names, aliases, scope and kinds dynamically, including custom resources.
   Compact `get` accepts one resource type and a separate optional name; use `native -- get` for `TYPE/NAME`, comma lists or `all`.
+- Selectors require compact lists without a resource name: `get <resource>` accepts `-l` / `--selector` and `--field-selector`, while `top node` and `top pod` accept `-l` / `--selector`.
+  Combining a name with a selector returns `USAGE` (exit 2) before any API request; omit the name to filter a list, or omit the selector for a named read.
 - Pods report name, namespace and phase, nodes report readiness, deployments report desired and available replicas, and `top` aggregates CPU and memory.
 - Use `get <resource> [name] -o json` for compact JSON.
   It serializes the same bounded summary as TOON, not the upstream object.
@@ -264,7 +268,7 @@ Insecure or redirected paths fail before credentials are read.
 
 - Output is TOON by default; failures print `error:` with a `code` and `message`, and keep the upstream status where available.
 - Distinct codes cover missing resources, denied access, expired continuation, authentication, unavailable APIs, malformed bodies, timeouts and byte limits.
-  Rejected read arguments use `BAD_REQUEST`, including invalid containers, unavailable previous logs and malformed selectors.
+  Read arguments rejected by the API use `BAD_REQUEST`, including invalid containers, unavailable previous logs and malformed selectors.
   Missing execution pods and scale targets use `RESOURCE_NOT_FOUND`.
   Missing saved preview or confirmation requests use `REQUEST_NOT_FOUND`; permission failures reading them use `REQUEST_UNREADABLE`.
   An explicitly selected missing standard config file uses `CONFIG_NOT_FOUND`; a missing default config without a complete environment profile uses `AUTH_REQUIRED`.
