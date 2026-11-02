@@ -123,23 +123,42 @@ export async function checkB4Host(context: {
     return workspace.id;
   };
   let boundary: Awaited<ReturnType<typeof portForwardBoundary>> | undefined;
-  const forward = async (limits: { lifetimeSeconds?: number } = {}): Promise<{ id: string; upstream: Duplex; stopped: ReturnType<typeof observeSocketStop> }> => {
+  const forward = async (limits: { lifetimeSeconds?: number } = {}, startup?: (socket: Duplex) => void): Promise<{ id: string; upstream: Duplex; stopped: ReturnType<typeof observeSocketStop> }> => {
     boundary ??= await portForwardBoundary(directory);
     let upstream: Duplex | undefined;
+    const sockets: { socket: Duplex; stopped: ReturnType<typeof observeSocketStop> }[] = [];
+    const stopped = {
+      shutdown: () => { for (const peer of sockets) peer.stopped.shutdown(); },
+      wait: async () => { await Promise.all(sockets.map(peer => peer.stopped.wait())); },
+    };
     portForwardFixture((incoming, socket, head) => {
+      sockets.push({ socket, stopped: observeSocketStop(socket) });
       if (incoming.method === 'POST') upstream = socket;
+      startup?.(socket);
       boundary!.upgrade(incoming, socket, head);
     });
-    const response = await call(prefix, 'POST', { kind: 'port-forward', argv: ['prepare', '--', 'port-forward', 'selected', '0:8080', '0:9090', '-n', 'synthetic-remote'], limits });
-    assert.equal(response.status, 200, await response.clone().text());
-    const session = await response.json() as { id: string; preview: { digest: string } };
-    assert.equal((await call(`${prefix}/${session.id}/confirm`, 'POST', { digest: session.preview.digest })).status, 200);
-    const readiness = await call(`${prefix}/${session.id}?wait=ready`);
-    assert.equal(readiness.status, 200, await readiness.clone().text());
-    const ready = await readiness.json() as { state: string; tunnelReady: boolean };
-    assert.equal(ready.state, 'running'); assert.equal(ready.tunnelReady, true);
-    assert(upstream);
-    return { ...session, upstream, stopped: observeSocketStop(upstream) };
+    let session: { id: string; preview: { digest: string } } | undefined;
+    try {
+      const response = await call(prefix, 'POST', { kind: 'port-forward', argv: ['prepare', '--', 'port-forward', 'selected', '0:8080', '0:9090', '-n', 'synthetic-remote'], limits });
+      assert.equal(response.status, 200, await response.clone().text());
+      session = await response.json() as { id: string; preview: { digest: string } };
+      assert.equal((await call(`${prefix}/${session.id}/confirm`, 'POST', { digest: session.preview.digest })).status, 200);
+      const readiness = await call(`${prefix}/${session.id}?wait=ready`);
+      assert.equal(readiness.status, 200, await readiness.clone().text());
+      const ready = await readiness.json() as { state: string; tunnelReady: boolean };
+      assert.equal(ready.state, 'running'); assert.equal(ready.tunnelReady, true);
+      assert(upstream);
+      return { ...session, upstream, stopped };
+    } catch (error) {
+      stopped.shutdown();
+      try {
+        if (session) assert.equal((await call(`${prefix}/${session.id}`, 'DELETE')).status, 200);
+      } finally {
+        for (const peer of sockets) peer.socket.destroy();
+        await stopped.wait();
+      }
+      throw error;
+    }
   };
   try {
     await check('B4.2-host:ungranted exec is denied before dispatch', async () => {
@@ -346,6 +365,11 @@ export async function checkB4Host(context: {
       assert.equal((await call('/v1/tools/kubernetes-axi/workspaces', 'POST', { files: [file] })).status, 400);
     });
     grants(['port-forward']);
+    for (const code of ['EPIPE', 'ECONNRESET']) await check(`B4.3-host:${code} during startup remains observable after setup cleanup`, async () => {
+      const failure = Object.assign(new Error('synthetic startup disconnect'), { code });
+      await assert.rejects(forward({}, socket => { socket.destroy(failure); }), error => error === failure);
+      await clean();
+    });
     await check('B4.3-host:two ports concurrent streams and half-close drain through authenticated loopback', async () => {
       const session = await forward();
       const { openKubernetesTunnel } = await host('dist/src/cli/kubernetes-tunnel.js');
