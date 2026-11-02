@@ -141,7 +141,7 @@ export function parse(args: string[], session = false): Invocation {
       : command.flags.find(flag => long ? flag.name === name : flag.short === name);
     if (!flag) {
       const valid = !native && Object.hasOwn(compactFlags, command.path) ? compactFlags[command.path]! : command.flags.filter(flag => ['argument', 'presentation'].includes(flag.effect)).map(flag => flag.name);
-      throw new Failure('USAGE', `Unknown flag ${long ? `--${name}` : `-${name}`} for ${command.path || 'kubernetes-axi'}. Valid flags: ${[...new Set([...valid, 'json', 'help'])].map(name => `--${name}`).join(', ')}.`, 2);
+      throw new Failure('USAGE', `Unknown flag ${long ? `--${name}` : `-${name}`} for ${command.path || 'kubernetes-axi'}. Valid flags: ${[...new Set([...valid, 'help'])].map(name => `--${name}`).join(', ')}.`, 2);
     }
     let value = long ? (arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : undefined) : arg.slice(2).replace(/^=/, '') || undefined;
     if (!long && flag.type === 'bool' && arg.length > 2 && arg[2] !== '=') {

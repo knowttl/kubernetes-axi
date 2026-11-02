@@ -725,7 +725,10 @@ try {
   await check('issue-37-json-after-native-separator', async () => {
     const result = await run(['native', '--', 'get', 'pods', '--json']);
     assert.equal(result.code, 2, result.stdout + result.stderr);
-    assert.equal((decode(result.stdout) as { error: { code: string } }).error.code, 'USAGE');
+    const error = (decode(result.stdout) as { error: { code: string; message: string } }).error;
+    assert.equal(error.code, 'USAGE');
+    assert.match(error.message, /^Unknown flag --json for get\./);
+    assert.doesNotMatch(error.message, /Valid flags:.*--json/);
     assert.equal(requests.length, 0);
   });
   for (const command of ['doctor', 'auth status']) await check(`issue-37-json-local-diagnostic:${command}`, async () => {
