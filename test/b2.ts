@@ -652,6 +652,88 @@ try {
   await check('generated-help-offline', async () => {
     const help = await compact('native', '--', 'get', '-Ah'); assert(help.flags.some((flag: any) => flag.name === '--namespace' && flag.short === '-n' && flag.type === 'string')); assert.equal(requests.length, 0);
   });
+  for (const args of [['get', 'pods'], ['describe', 'pod', 'resource-008'], ['logs', 'resource-008']] as const) await check(`issue-37-json-projection:${args.join(' ')}`, async () => {
+    const expected = await compact(...args);
+    const result = await run(['--json', ...args]);
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), expected);
+    assert.equal(result.stderr, '');
+  });
+  await check('issue-8-json-legacy-parity', async () => {
+    const legacy = await run(['get', 'pods', '-o', 'json']);
+    const result = await run(['get', 'pods', '--json']);
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), JSON.parse(legacy.stdout));
+  });
+  for (const args of [['--help'], ['help', 'get'], ['help', 'top', 'pod']] as const) await check(`issue-37-json-help:${args.join(' ')}`, async () => local(async () => {
+    const expected = await compact(...args);
+    const result = await run(['--json', ...args]);
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), expected);
+    assert.equal(requests.length, 0);
+  }));
+  for (const args of [['--json', '--version'], ['--version', '--json']] as const) await check(`issue-37-json-version:${args.join(' ')}`, async () => local(async () => {
+    const result = await run([...args]);
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.equal(result.stdout.trim(), JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version);
+    assert.equal(requests.length, 0);
+  }));
+  for (const [args, code, status] of [
+    [['nonsense'], 'USAGE', 2],
+    [['get', 'pods', '--bad-flag'], 'USAGE', 2],
+    [['prepare', '--', 'exec', 'selected', '-it', '--', 'true'], 'LOCAL_TERMINAL_REQUIRED', 1],
+    [['--json', 'get', 'pods'], 'USAGE', 2],
+  ] as const) await check(`issue-37-json-error:${args.join(' ')}`, async () => {
+    const result = await run(['--json', ...args]);
+    assert.equal(result.code, status, result.stdout + result.stderr);
+    assert.equal(JSON.parse(result.stdout).error.code, code);
+    assert.equal(result.stderr, '');
+    assert.equal(requests.length, 0);
+  });
+  await check('issue-37-json-missing-auth', async () => local(async () => {
+    const result = await run(['--json', 'get', 'pods']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal(JSON.parse(result.stdout).error.code, 'AUTH_REQUIRED');
+    assert.equal(requests.length, 0);
+  }));
+  await check('issue-37-json-upstream-error', async () => {
+    const args = ['get', 'pods', 'axi-design-nonexistent-probe'];
+    const expected = await run(args);
+    assert.equal(expected.code, 1, expected.stdout + expected.stderr);
+    const result = await run(['--json', ...args]);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), decode(expected.stdout));
+    assert.equal(JSON.parse(result.stdout).error.upstreamStatus, 404);
+  });
+  await check('issue-37-json-redaction', async () => {
+    override = { path: '/api/v1/namespaces/kube-system/pods', envelope: { status: 200, headers: {}, body: {
+      apiVersion: 'v1', kind: 'PodList', metadata: { resourceVersion: environment.SYNTHETIC_TOKEN }, items: [],
+    } } };
+    const result = await run(['--json', 'get', 'pods']);
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.equal(JSON.parse(result.stdout).resourceVersion, '[REDACTED]');
+    assert.equal(result.stdout.includes(environment.SYNTHETIC_TOKEN!), false);
+  });
+  await check('issue-9-json-native-describe', async () => {
+    const expected = await run(['native', '--', 'describe', 'pod', 'resource-008']);
+    assert.equal(expected.code, 0, expected.stdout + expected.stderr);
+    const result = await run(['--json', 'native', '--', 'describe', 'pod', 'resource-008']);
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.equal(result.stdout, expected.stdout);
+    assert.equal(result.stderr, expected.stderr);
+  });
+  await check('issue-37-json-after-native-separator', async () => {
+    const result = await run(['native', '--', 'get', 'pods', '--json']);
+    assert.equal(result.code, 2, result.stdout + result.stderr);
+    assert.equal((decode(result.stdout) as { error: { code: string } }).error.code, 'USAGE');
+    assert.equal(requests.length, 0);
+  });
+  for (const command of ['doctor', 'auth status']) await check(`issue-37-json-local-diagnostic:${command}`, async () => {
+    const result = await run(['--json', ...command.split(' ')]);
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.equal(JSON.parse(result.stdout).connectivity, 'not checked');
+    assert.equal(requests.length, 0);
+  });
   for (const [args, command] of [
     [['help', 'get'], 'get'],
     [['help', 'top', 'pod'], 'top pod'],
