@@ -528,20 +528,32 @@ try {
     const native = await run(['native', '--', 'get', 'pod', 'resource-008', '-o', 'json']);
     assert.equal(native.code, 0, native.stderr); assert.equal(JSON.parse(native.stdout).metadata.name, 'resource-008');
   });
-  for (const [id, args, path, envelope, code] of [
-    ['AC-011', ['get', 'pods', 'axi-design-nonexistent-probe'], '/api/v1/namespaces/kube-system/pods/axi-design-nonexistent-probe', fixture('P-012'), 'RESOURCE_NOT_FOUND'],
-    ['AC-009', ['top', 'node'], '/apis/metrics.k8s.io/v1beta1/nodes', fixture('P-009'), 'API_UNAVAILABLE'],
-    ['denied', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', { status: 403, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Forbidden', message: 'Forbidden', code: 403 } }, 'ACCESS_DENIED'],
-    ['expiry', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', { status: 410, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Expired', message: 'Expired', code: 410 } }, 'RESOURCE_EXPIRED'],
-    ['credential-expiry', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', { status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } }, 'AUTH_REQUIRED'],
-    ['schema-unavailable', ['explain', 'pods'], '/openapi/v3/api/v1', { status: 404, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', message: 'NotFound', code: 404 } }, 'SCHEMA_UNAVAILABLE'],
-    ['malformed', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', 'malformed', 'UPSTREAM_INVALID'],
-    ['timeout', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', 'timeout', 'UPSTREAM_TIMEOUT'],
-    ['byte-limit', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', 'oversize', 'OUTPUT_LIMIT'],
+  for (const [id, args, path, envelope, code, nativeMeaning] of [
+    ['AC-011', ['get', 'pods', 'axi-design-nonexistent-probe'], '/api/v1/namespaces/kube-system/pods/axi-design-nonexistent-probe', fixture('P-012'), 'RESOURCE_NOT_FOUND', /Error from server \(NotFound\): pods "axi-design-nonexistent-probe" not found/],
+    ['AC-009', ['top', 'node'], '/apis/metrics.k8s.io/v1beta1/nodes', fixture('P-009'), 'API_UNAVAILABLE', /Error from server \(NotFound\):[^\n]*get nodes\.metrics\.k8s\.io/],
+    ['denied', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', { status: 403, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Forbidden', message: 'Forbidden', code: 403 } }, 'ACCESS_DENIED', /Error from server \(Forbidden\):/],
+    ['expiry', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', { status: 410, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Expired', message: 'Expired', code: 410 } }, 'RESOURCE_EXPIRED', /Error from server \(Expired\):/],
+    ['credential-expiry', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', { status: 401, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'Unauthorized', message: 'Unauthorized', code: 401 } }, 'AUTH_REQUIRED', /You must be logged in to the server/],
+    ['schema-unavailable', ['explain', 'pods'], '/openapi/v3/api/v1', { status: 404, headers: {}, body: { kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', message: 'NotFound', code: 404 } }, 'SCHEMA_UNAVAILABLE', /failed to fetch openapi schema for api\/v1/],
+    ['malformed', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', 'malformed', 'UPSTREAM_INVALID', /invalid character|unexpected end of JSON/],
+    ['timeout', ['get', 'pods'], '/api/v1/namespaces/kube-system/pods', 'timeout', 'UPSTREAM_TIMEOUT', /deadline exceeded|timed out|Timeout/],
   ] as const) await check(id, async () => {
     override = { path, envelope: envelope as Envelope | 'malformed' | 'timeout' | 'oversize' };
     const result = await run([...args]); assert.equal(result.code, 1, result.stdout); assert.equal((decode(result.stdout) as any).error.code, code);
-    const native = await run(['native', '--', ...args]); assert.notEqual(native.code, 0); assert(native.stdout || native.stderr);
+    const native = await run(['native', '--', ...args]); assert.equal(native.code, 1, native.stdout + native.stderr); assert.match(native.stdout + native.stderr, nativeMeaning);
+  });
+  await check('byte-limit', async () => {
+    const path = '/api/v1/namespaces/kube-system/pods';
+    override = { path, envelope: 'oversize' };
+    const result = await run(['get', 'pods']);
+    assert.equal(result.code, 1, result.stdout);
+    assert.equal((decode(result.stdout) as any).error.code, 'OUTPUT_LIMIT');
+    const native = await run(['native', '--', 'get', `--raw=${path}`]);
+    assert.equal(native.code, 1, native.stdout + native.stderr);
+    const failure = (decode(native.stdout) as any).error;
+    assert.equal(failure.code, 'OUTPUT_LIMIT');
+    assert.equal(failure.cause, 'byte_limit');
+    assert.equal(native.stderr, '');
   });
   for (const type of ['node', 'pod']) for (const stage of ['discovery', 'resource']) await check(`R1-native-prefix-metrics-${type}-${stage}`, async () => local(async () => {
     const settings = structuredClone(nativeSettings);
@@ -912,9 +924,13 @@ try {
   const artiumDirty = selectedArtium ? Boolean(execFileSync('git', ['-C', selectedArtium, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' }).trim()) : false;
   const fixturePackageSha256 = selectedArtium ? createHash('sha256').update(readFileSync(join(selectedArtium, 'tools/fixtures/knowttl-kubernetes-axi-0.1.0.tgz'))).digest('hex') : undefined;
   const fixturePending = Boolean(selectedArtium && (artiumDirty || fixturePackageSha256 !== packageSha256));
+  const hostedCases = cases.filter(result => /^B4\.[123]-host:/.test(result.case));
+  const hostedOutcome = hostedCases.length === 0 ? 'skipped' : hostedCases.some(result => result.outcome !== 'pass') ? 'failure' : 'executed';
+  if (!process.exitCode && selectedArtium && hostedOutcome === 'skipped') process.exitCode = 2;
   if (!process.exitCode && fixturePending) process.exitCode = 2;
   console.log(JSON.stringify({ tasks: taskArgument >= 0 ? [process.argv[taskArgument + 1]] : ['B2.1', 'B2.2', 'B2.3', 'B2.4', 'B3.1', 'B3.2', 'B3.3', 'B3.4'], outcome: process.exitCode === 2 ? 'pending' : process.exitCode ? 'failure' : 'pass', nativeOS: process.platform,
-    artium: selectedArtium ? { outcome: 'executed', revision: artiumRevision,
+    artium: selectedArtium ? { outcome: hostedOutcome, cases: hostedCases,
+      ...(hostedOutcome === 'skipped' ? { reason: 'No hosted cases were selected or completed.' } : {}), revision: artiumRevision,
       sourceArchiveSha256: createHash('sha256').update(execFileSync('git', ['-C', selectedArtium, 'archive', artiumRevision!], { maxBuffer: 64 * 1024 * 1024 })).digest('hex'),
       workingTreeDirty: artiumDirty, fixturePackageSha256, packageMatchesCandidate: fixturePackageSha256 === packageSha256 } : { outcome: 'skipped', reason: 'Real Artium journeys are opt-in; supply --artium <frozen-checkout>.' },
     packageSha256,
