@@ -7,8 +7,9 @@ Read Kubernetes resources using isolated credentials and pinned kubectl v1.32.2.
 Use --profile <name> to select an AXI identity.
 Use native -- <kubectl arguments> for native output; native --profile is upstream profiling and is blocked because it writes files.
 Reads are bounded; inspect complete, truncated and continue before treating output as complete.
-Writes default off.
+Cluster writes default off.
 Explicitly enable KUBERNETES_AXI_READ_ONLY=false, then use prepare -- <mutation>, preview <request-key>, and confirm <request-key> --digest <preview-digest>.
+Native configuration edits require one explicit source file; follow https://github.com/knowttl/kubernetes-axi#native-identity for the local-write policy.
 Preparation reads exact targets; local preview makes no API calls.
 Confirmation is one-shot and refuses stale or changed targets.
 Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.

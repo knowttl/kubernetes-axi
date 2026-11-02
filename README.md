@@ -1,6 +1,6 @@
 # kubernetes-axi
 
-Agent-facing Kubernetes CLI that runs a pinned kubectl with an isolated identity, read-only by default.
+Agent-facing Kubernetes CLI that runs a pinned kubectl with an isolated identity, with cluster writes disabled by default.
 
 [Why](#why-this-exists) | [Quickstart](#quickstart) | [Use with your agent](#use-with-your-agent) | [Commands](#commands) | [Safety](#safety) | [Configuration](#configuration) | [Output](#output-and-exit-codes) | [Limitations](#limitations) | [Development](#development) | [Security](#security) | [License](#license)
 
@@ -89,7 +89,7 @@ Reads:
   Its stdout, stderr and exit status are kept after redaction, with the same time and byte bounds.
 - `--profile` before `native --` selects an AXI identity; upstream `--profile` after the delimiter is refused as profiling output.
 
-Writes and operations (all require `KUBERNETES_AXI_READ_ONLY=false`):
+Cluster writes and operations (all require `KUBERNETES_AXI_READ_ONLY=false`):
 
 ```text
 kubernetes-axi --profile <name> prepare -- <mutation>
@@ -114,8 +114,8 @@ Generated grammar:
 ## Safety
 
 - Reads are bounded: one page of at most 100 objects, no automatic continuation, a 15-second budget per read, at most 64 child invocations, a 5-second request timeout, a 10-second child limit and 4 MiB of retained output.
-- Writes default off.
-  `KUBERNETES_AXI_READ_ONLY` accepts only `true`, `false`, `1` or `0` and also gates native configuration writes.
+- Cluster writes default off.
+  `KUBERNETES_AXI_READ_ONLY` accepts only `true`, `false`, `1` or `0`; see [Native identity](#native-identity) for the local configuration write policy.
 - `prepare` runs the pinned kubectl through a guarded channel, captures the exact operation sequence, freezes UIDs and resourceVersions, and never forwards mutations.
   The child gets a temporary loopback capability, not the upstream credentials.
 - `preview` reads only the saved snapshot and makes no API request.
@@ -195,7 +195,10 @@ kubernetes-axi --native-config /absolute/kubeconfig --trust-exec get pods
   Helper identities can read but cannot use `prepare`, `confirm` or `server-dry-run`; they fail with `AUTH_HELPER_MUTATION_UNAVAILABLE`.
   Use a static token or client certificate for mutations.
   Tracked in [issue #19](https://github.com/knowttl/kubernetes-axi/issues/19).
-- Native configuration edits need a single explicit source path.
+- Native configuration edits need a single explicit source path selected with `--native-config /absolute/kubeconfig`; `ambient` is refused for native `config` operations.
+  These edits run directly through `native -- config <command>`, without prepare, preview or confirm, and make no cluster API requests.
+  They are allowed when `KUBERNETES_AXI_READ_ONLY` is unset, `false` or `0`; explicit `true` or `1` blocks them.
+  The source file is updated only after the command succeeds.
   Generic `config set`, credential argv writes and raw credential inspection are refused.
 
 ### Hosted sessions
@@ -255,7 +258,7 @@ Environment variables:
 | `KUBERNETES_AXI_ORIGIN`, `KUBERNETES_AXI_AUTH`, `KUBERNETES_AXI_CERTIFICATE_AUTHORITY`, `KUBERNETES_AXI_TOKEN` | Token environment profile. |
 | `KUBERNETES_AXI_CLIENT_CERTIFICATE`, `KUBERNETES_AXI_PRIVATE_KEY` | Certificate profile, used instead of the token. |
 | `KUBERNETES_AXI_NAMESPACE` | Optional default namespace. |
-| `KUBERNETES_AXI_READ_ONLY` | `false` enables writes. |
+| `KUBERNETES_AXI_READ_ONLY` | `false` enables cluster writes; see [Native identity](#native-identity) for local configuration edits. |
 | `KUBERNETES_AXI_COLLECTION_DELETE` | `true` allows bulk deletion. |
 | `KUBERNETES_AXI_ACQUIRE_CREDENTIAL` | `true` allows token issuance. |
 
