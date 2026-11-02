@@ -128,6 +128,8 @@ Generated grammar:
 - `server-dry-run` is an explicit `dryRun=All` API operation that never issues a confirmation.
 - Token issuance (`create token`) additionally needs `KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true`, a duration of at most one hour and a private inherited pipe passed as `--credential-fd <fd>` to `confirm`.
   The token is delivered once and never stored.
+- Exec/attach request timeouts are fixed: omit `--request-timeout` or use exactly `5s` for standalone execution and `0` for hosted sessions, whose separate session deadline remains enforced.
+  Conflicting overrides fail before preparation makes API requests.
 - Credential overrides, server overrides, impersonation, TLS bypass and generic proxy listeners are refused.
   Unknown flags are rejected before any effect.
 - In 0.1.x, execution of editors, plugins and external render/diff helpers is refused before effects, including when writes are enabled.
