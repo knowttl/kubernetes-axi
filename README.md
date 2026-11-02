@@ -170,11 +170,13 @@ Native `completion`, `options`, `plugin list` and `version --client=true` run of
 `plugin list` discovers programs on PATH without executing them.
 
 ```sh
-kubernetes-axi --profile <name> prepare -- exec <pod> -n <namespace> -- true
+kubernetes-axi --profile <name> prepare -- exec <pod> -n <namespace> -c <container> -- printf '%s\n' 'hello'
 kubernetes-axi --profile <name> preview <request-key>
 kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>
 kubernetes-axi native -- completion bash
 ```
+
+See [Output and exit codes](#output-and-exit-codes) for confirmation replay behavior.
 
 ### Native identity
 

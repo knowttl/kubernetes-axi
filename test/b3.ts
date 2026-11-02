@@ -577,7 +577,7 @@ export async function checkMutations({ run, check, environment, directory, reque
     const annotation = objects.get(`${apps}/deployments/selected`)!.spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt'];
     const timestamp = Date.parse(annotation);
     assert(timestamp >= Math.floor(started / 1000) * 1000 && timestamp <= completed,
-      `Restart timestamp must identify this operation: ${annotation}`);
+      `Restart timestamp must identify this operation: ${JSON.stringify({ annotation, started, completed, timestamp })}`);
     assert.deepEqual(objects.get(`${apps}/deployments/decoy`), decoy);
   });
   await test('B3-rollout-resume', async () => {

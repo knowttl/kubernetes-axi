@@ -403,6 +403,15 @@ export async function checkRemote(context: {
       assert.equal(result.stderr, 'diagnostic\n');
       assert.deepEqual(forwarded.map(item => item.method), spdy ? ['GET', 'POST'] : ['GET']);
       assert.equal(new URLSearchParams(forwarded.at(-1)!.query).get('container'), 'selected-container');
+      const connections = forwarded.length;
+      const replay = await run(confirmation);
+      assert.equal(replay.code, 0, replay.stdout + replay.stderr);
+      const completed = decode(replay.stdout) as { state: string; complete: boolean; replayed: boolean; exitCode: number };
+      assert.equal(completed.state, 'complete');
+      assert.equal(completed.complete, true);
+      assert.equal(completed.replayed, true);
+      assert.equal(completed.exitCode, 0);
+      assert.equal(forwarded.length, connections, 'A successful confirmation replay must not execute the command again');
     });
     for (const spdy of [false, true]) await check(`R1-execution-display-redaction:${spdy ? 'SPDY fallback' : 'WebSocket GET'}`, async () => {
       const originalToken = environment.SYNTHETIC_TOKEN;
@@ -435,8 +444,8 @@ export async function checkRemote(context: {
         }
       } finally { environment.SYNTHETIC_TOKEN = originalToken; }
     });
-    await check('AC-EXIT-001:remote exit code', async () => {
-      fallback = false;
+    for (const spdy of [false, true]) await check(`AC-EXIT-001:remote exit code:${spdy ? 'SPDY fallback' : 'WebSocket GET'}`, async () => {
+      fallback = spdy;
       const confirmation = await prepare(['exec', 'selected', '-n', 'synthetic-remote', '--', 'fail']);
       const result = await run(confirmation);
       assert.equal(result.code, 17, result.stdout + result.stderr);
