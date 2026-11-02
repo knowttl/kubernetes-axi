@@ -87,7 +87,7 @@ export function mutationFixture(request: IncomingMessage, response: ServerRespon
       send({ ...body, status: review[2] === 'selfsubjectreviews' ? { userInfo: { username: 'synthetic-identity', groups: ['synthetic'] } } : review[2] === 'selfsubjectrulesreviews' ? { resourceRules: [], nonResourceRules: [], incomplete: true, evaluationError: 'synthetic partial rules' } : { allowed: mode !== 'access-denied', denied: mode === 'access-denied', reason: 'synthetic explicit review' } });
     })(); return true;
   }
-  const selectedPath = request.method !== 'GET' && path === '/api/v1/namespaces' || path.startsWith(core) || path.startsWith(apps) || path.startsWith(widgets) || /\/namespaces\/synthetic-b3\//.test(path) || /\/b3-[a-z-]+(?:\/|$)/.test(path) || path === '/api/v1/pods' && url.searchParams.get('fieldSelector')?.includes('b3-node');
+  const selectedPath = objects.has(path) || request.method !== 'GET' && path === '/api/v1/namespaces' || path.startsWith(core) || path.startsWith(apps) || path.startsWith(widgets) || /\/namespaces\/synthetic-b3\//.test(path) || /\/b3-[a-z-]+(?:\/|$)/.test(path) || path === '/api/v1/pods' && url.searchParams.get('fieldSelector')?.includes('b3-node');
   if (!selectedPath) return false;
   void (async () => {
     const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -249,6 +249,63 @@ export async function checkMutations({ run, check, environment, directory, reque
     assert.equal(effects.length, 0);
     assert.equal((await confirm(saved)).state, 'complete');
     assert.equal(objects.get(`${core}/configmaps/raw-created`)!.data.value, 'raw');
+  });
+  for (const [scope, resource, apiVersion, kind, collection] of [
+    ['core', 'configmap', 'v1', 'ConfigMap', `${core}/configmaps`],
+    ['grouped', 'widget', 'synthetic.example/v1beta1', 'Widget', widgets],
+  ] as const) for (const name of ['token', 'proxy', 'portforward', 'exec', 'attach']) await test(`issue-21-${scope}-resource-name:${name}`, async () => {
+    const target = `${collection}/${name}`;
+    objects.set(target, doc(apiVersion, kind, name, ns, { data: { value: 'before' } }));
+    const decoy = structuredClone(objects.get(`${core}/configmaps/decoy`));
+    const saved = await approved(['patch', resource, name, '-n', ns, '--type=merge', '-p', '{"data":{"value":"after"}}']);
+    assert.equal(effects.length, 0);
+    assert.equal((await confirm(saved)).state, 'complete');
+    assert.equal(objects.get(target)!.data.value, 'after');
+    assert.deepEqual(effects.map(effect => ({ method: effect.method, path: effect.path })), [{ method: 'PATCH', path: target }]);
+    assert.deepEqual(objects.get(`${core}/configmaps/decoy`), decoy);
+  });
+  for (const namespace of ['token', 'proxy', 'portforward', 'exec', 'attach', 'watch']) await test(`issue-21-namespace-name:${namespace}`, async () => {
+    const target = `/api/v1/namespaces/${namespace}/configmaps/selected`;
+    objects.set(target, doc('v1', 'ConfigMap', 'selected', namespace, { data: { value: 'before' } }));
+    const decoy = structuredClone(objects.get(`${core}/configmaps/selected`));
+    const saved = await approved(['patch', 'configmap', 'selected', '-n', namespace, '--type=merge', '-p', '{"data":{"value":"after"}}']);
+    assert.equal(effects.length, 0);
+    assert.equal((await confirm(saved)).state, 'complete');
+    assert.equal(objects.get(target)!.data.value, 'after');
+    assert.deepEqual(objects.get(`${core}/configmaps/selected`), decoy);
+  });
+  await test('issue-21-read-only-named-resource', async () => {
+    const target = `${core}/configmaps/token`;
+    objects.set(target, doc('v1', 'ConfigMap', 'token', ns, { data: { value: 'before' } }));
+    environment.KUBERNETES_AXI_READ_ONLY = 'true';
+    const read = await run(['native', '--', 'get', `--raw=${target}`]);
+    assert.equal(read.code, 0, read.stdout + read.stderr);
+    assert.equal((JSON.parse(read.stdout) as { data: { value: string } }).data.value, 'before');
+    const before = requests.length;
+    const write = await run(['prepare', '--', 'patch', 'configmap', 'token', '-n', ns, '--type=merge', '-p', '{"data":{"value":"after"}}']);
+    assert.equal((decode(write.stdout) as { error: { code: string } }).error.code, 'READ_ONLY');
+    assert.equal(requests.length, before);
+    assert.equal(effects.length, 0);
+  });
+  await test('issue-21-cluster-resource-name', async () => {
+    const target = '/api/v1/namespaces/token';
+    const namespace = doc('v1', 'Namespace', 'token');
+    objects.set(target, namespace);
+    const read = await run(['native', '--', 'get', `--raw=${target}`]);
+    assert.equal(read.code, 0, read.stdout + read.stderr);
+    assert.deepEqual(JSON.parse(read.stdout), namespace);
+    assert.equal(effects.length, 0);
+  });
+  for (const path of [
+    `${core}/pods/token/exec?command=true`, `${core}/pods/proxy/attach`, `${core}/pods/exec/portforward`,
+    `${core}/pods/attach/proxy/api/v1/namespaces/token/pods`, `${core}/serviceaccounts/proxy/token`,
+    '/api/v1/proxy/namespaces/exec/pods/token/api/v1/pods', '/api/v1/watch/namespaces/proxy/pods',
+    `${core}/configmaps/token?watch=true`,
+  ]) await test(`issue-21-guard:${path}`, async () => {
+    const result = await run(['native', '--', 'get', `--raw=${path}`]);
+    assert.equal((decode(result.stdout) as { error: { code: string } }).error.code, 'CAPABILITY_UNAVAILABLE');
+    assert.equal(requests.length, 0);
+    assert.equal(effects.length, 0);
   });
   for (const args of [
     ['native', '--', 'get', `--raw=${core}/pods/pod-a/proxy/api/v1/pods`],
