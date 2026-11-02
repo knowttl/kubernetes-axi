@@ -102,7 +102,6 @@ export function parse(args: string[], session = false): Invocation {
     } else argv.push(arg);
   }
   if (own.credentialFd !== undefined) throw new Failure('USAGE', '--credential-fd is only available before confirm.', 2);
-  if (native && argv[0] === 'help' && argv.length > 1) { argv.shift(); argv.push('--help'); }
   const versionProbe = !native && !workflow && argv.length === 1 && ['--version', '-v', '-V'].includes(argv[0]!);
   if (versionProbe) argv.splice(0, 1, 'version');
   const localCommand = argv.filter(arg => !['--help', '-h'].includes(arg)).join(' ');
@@ -121,6 +120,10 @@ export function parse(args: string[], session = false): Invocation {
     const arg = tokens[index]!;
     if (arg === '--') { ended = true; continue; }
     if (ended || !arg.startsWith('-') || arg === '-') {
+      if (!ended && command.path === '' && positionals.length === 0 && arg === 'help' && index + 1 < tokens.length) {
+        tokens.push('--help');
+        continue;
+      }
       const child = !ended && positionals.length === 0 ? metadata.commands.find(item => {
         const words = item.path.split(' ');
         const parent = words.slice(0, -1).join(' ');

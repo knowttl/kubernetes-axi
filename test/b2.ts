@@ -645,6 +645,9 @@ try {
     [['help', 'top', 'pod'], 'top pod'],
     [['help', 'top', 'node'], 'top node'],
     [['help', 'prepare'], 'prepare'],
+    [['help', 'preview'], 'preview'],
+    [['help', 'confirm'], 'confirm'],
+    [['help', 'server-dry-run'], 'server-dry-run'],
     [['help', 'native', '--', 'get'], 'get'],
     [['native', '--', 'help', 'get'], 'get'],
     [['native', '--', 'help', 'top', 'pod'], 'top pod'],
@@ -654,6 +657,24 @@ try {
     assert.notEqual(output.usage, 'help [command]');
     assert.equal(requests.length, 0);
   }));
+  for (const prefix of [[], ['native', '--']]) for (const namespace of [
+    ['-n', 'kube-system'], ['--namespace', 'kube-system'], ['--namespace=kube-system'], ['-nkube-system'], ['-n', 'help'],
+  ]) for (const [target, command] of [[['get'], 'get'], [['top', 'pod'], 'top pod'], [['top', 'node'], 'top node']] as const) {
+    const args = [...prefix, ...namespace, 'help', ...target];
+    await check(`issue-6-help-inherited-flags:${args.join(' ')}`, async () => local(async () => {
+      const output = await compact(...args);
+      assert.equal(output.command, command);
+      assert.notEqual(output.usage, 'help [command]');
+      assert.equal(requests.length, 0);
+    }));
+  }
+  for (const prefix of [[], ['native', '--']]) await check(`issue-6-help-namespace-value:${prefix.join(' ')}`, async () => {
+    const path = '/api/v1/namespaces/help/pods';
+    override = { path, envelope: { status: 200, headers: {}, body: { apiVersion: 'v1', kind: 'PodList', metadata: {}, items: [] } } };
+    const result = await run([...prefix, '-n', 'help', 'get', 'pods', '-o', 'json']);
+    assert.equal(result.code, 0, result.stdout);
+    assert(requests.some(request => request.split('?')[0] === path));
+  });
   for (const args of [
     ['get', 'pods', 'resource-008', '-l', 'app=nonexistent'],
     ['get', 'pod', 'resource-008', '--selector=app=nonexistent'],
