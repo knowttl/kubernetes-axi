@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { decode } from '@toon-format/toon';
 
@@ -395,11 +395,11 @@ export async function checkMutations({ run, check, environment, directory, reque
     assert.equal(objects.get(target)!.data?.value ?? objects.get(target)!.spec.value, expected);
     assert.deepEqual(objects.get(`${core}/configmaps/decoy`), decoy);
   });
-  for (const [scope, path, type, apiVersion, kind, extra] of [
-    ['core', `${core}/configmaps`, 'configmap', 'v1', 'ConfigMap', { data: { value: 'after' } }],
-    ['grouped', `${apps}/deployments`, 'deployment', 'apps/v1', 'Deployment', { spec: { replicas: 3, selector: { matchLabels: { app: 'selected' } }, template: deployment('selected').spec.template } }],
-    ['cluster', '/api/v1/namespaces', 'namespace', 'v1', 'Namespace', { metadata: { labels: { changed: 'true' } } }],
-    ['custom', widgets, 'widget', 'synthetic.example/v1beta1', 'Widget', { spec: { value: 'after' } }],
+  for (const [scope, path, apiVersion, kind, extra] of [
+    ['core', `${core}/configmaps`, 'v1', 'ConfigMap', { data: { value: 'after' } }],
+    ['grouped', `${apps}/deployments`, 'apps/v1', 'Deployment', { spec: { replicas: 3, selector: { matchLabels: { app: 'selected' } }, template: deployment('selected').spec.template } }],
+    ['cluster', '/api/v1/namespaces', 'v1', 'Namespace', { metadata: { labels: { changed: 'true' } } }],
+    ['custom', widgets, 'synthetic.example/v1beta1', 'Widget', { spec: { value: 'after' } }],
   ] as const) {
     for (const verb of ['create', 'replace', 'apply'] as const) await test(`B3-${verb}-${scope}`, async () => {
       const name = verb === 'create' ? 'b3-created' : scope === 'cluster' ? 'b3-space' : 'selected';
@@ -409,7 +409,7 @@ export async function checkMutations({ run, check, environment, directory, reque
       const args = [verb, '-f', file, '--validate=false', ...(scope === 'cluster' ? [] : ['-n', ns]), ...(verb === 'apply' ? ['--openapi-patch=false'] : [])];
       const saved = await approved(args); assert.equal(effects.length, 0);
       await confirm(saved);
-      const changed = objects.get(`${path}/${name}`)!; assert(changed, `${verb} ${type}`);
+      const changed = objects.get(`${path}/${name}`)!;
       if (scope === 'core') assert.equal(changed.data.value, 'after');
       if (scope === 'grouped') assert.equal(changed.spec.replicas, 3);
       if (scope === 'custom') assert.equal(changed.spec.value, 'after');
@@ -555,7 +555,6 @@ export async function checkMutations({ run, check, environment, directory, reque
     ['certificate-approve', ['certificate', 'approve', 'b3-csr'], () => assert.equal(objects.get('/apis/certificates.k8s.io/v1/certificatesigningrequests/b3-csr')!.status.conditions[0].type, 'Approved')],
     ['certificate-deny', ['certificate', 'deny', 'b3-csr'], () => assert.equal(objects.get('/apis/certificates.k8s.io/v1/certificatesigningrequests/b3-csr')!.status.conditions[0].type, 'Denied')],
     ['rollout-pause', ['rollout', 'pause', 'deployment/selected', '-n', ns], () => assert.equal(objects.get(`${apps}/deployments/selected`)!.spec.paused, true)],
-    ['rollout-restart', ['rollout', 'restart', 'deployment/selected', '-n', ns], () => assert(objects.get(`${apps}/deployments/selected`)!.spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt'])],
     ['label', ['label', 'configmap', 'selected', '-n', ns, 'maintenance=true'], () => assert.equal(objects.get(`${core}/configmaps/selected`)!.metadata.labels.maintenance, 'true')],
     ['annotate', ['annotate', 'configmap', 'selected', '-n', ns, 'description=after'], () => assert.equal(objects.get(`${core}/configmaps/selected`)!.metadata.annotations.description, 'after')],
     ['set-image', ['set', 'image', 'deployment/selected', '-n', ns, 'app=synthetic:v2'], () => assert.equal(objects.get(`${apps}/deployments/selected`)!.spec.template.spec.containers[0].image, 'synthetic:v2')],
@@ -569,6 +568,17 @@ export async function checkMutations({ run, check, environment, directory, reque
     objects.set(`${core}/services/selected`, doc('v1', 'Service', 'selected', ns, { spec: { selector: { app: 'before' }, ports: [{ port: 80 }] } }));
     const decoy = structuredClone(objects.get('/api/v1/nodes/b3-decoy'));
     await confirm(await approved([...args])); verify(); assert.deepEqual(objects.get('/api/v1/nodes/b3-decoy'), decoy);
+  });
+  await test('B3-operation-rollout-restart', async () => {
+    const decoy = structuredClone(objects.get(`${apps}/deployments/decoy`));
+    const started = Date.now();
+    await confirm(await approved(['rollout', 'restart', 'deployment/selected', '-n', ns]));
+    const completed = Date.now();
+    const annotation = objects.get(`${apps}/deployments/selected`)!.spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt'];
+    const timestamp = Date.parse(annotation);
+    assert(timestamp >= Math.floor(started / 1000) * 1000 && timestamp <= completed,
+      `Restart timestamp must identify this operation: ${annotation}`);
+    assert.deepEqual(objects.get(`${apps}/deployments/decoy`), decoy);
   });
   await test('B3-rollout-resume', async () => {
     objects.get(`${apps}/deployments/selected`)!.spec.paused = true;
@@ -621,6 +631,5 @@ export async function checkMutations({ run, check, environment, directory, reque
     const file = join(directory, 'requests', saved.request, 'request.json'); const content = JSON.parse(readFileSync(file, 'utf8'));
     content.plan.changes[0].path = `${core}/configmaps/decoy`; writeFileSync(file, JSON.stringify(content));
     const result = await run(['confirm', saved.request, '--digest', saved.digest]); assert.equal((decode(result.stdout) as any).error.code, 'PREVIEW_INVALID'); assert.equal(effects.length, 0);
-    assert(readdirSync(join(directory, 'requests')).length > 0);
   });
 }

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
@@ -14,7 +13,7 @@ assert.equal(process.platform, 'linux', 'B5 currently records Linux evidence onl
 assert.equal(readFileSync('/proc/net/route', 'utf8').trim().split('\n').length, 1, 'Offline checks require a loopback-only network namespace');
 const checks: { command: string; outcome: string; exitCode: number | null; result?: unknown }[] = [];
 let exitCode = 0;
-const run = (binary: string, args: string[], cwd = root): string => {
+const run = (binary: string, args: string[], cwd = root): unknown => {
   console.error(`Checking ${binary} ${args.join(' ')}`);
   const result = spawnSync(binary, args, { cwd, encoding: 'utf8', timeout: 900000, maxBuffer: 32 * 1024 * 1024,
     env: { ...process.env, GOPROXY: 'off', GOSUMDB: 'off', npm_config_offline: 'true', CI: 'true' } });
@@ -29,7 +28,7 @@ const run = (binary: string, args: string[], cwd = root): string => {
     exitCode = result.status === 2 && exitCode !== 1 ? 2 : 1;
     process.stderr.write(result.stdout + result.stderr + (result.error?.message ?? ''));
   }
-  return result.stdout;
+  return report;
 };
 
 if (task === 'B5.2') {
@@ -39,18 +38,26 @@ if (task === 'B5.2') {
   run(process.execPath, ['test/private-files.ts']);
   run(process.env.KUBERNETES_AXI_VERIFY_PYTHON ?? 'python3', ['scripts/verify.py', 'task', artium ? 'B1.2' : 'B1.1', '--mode', 'offline', '--pack', pack, '--network-isolated', ...(artium ? ['--artium', artium] : [])]);
 }
-run(process.execPath, [join(root, 'test/b2.ts'), '--pack', pack, '--task', task,
-  ...(task === 'B5.1' ? ['--case', '^B5\\.1|^AC-017:TTY|^AC-029|^CC-009'] : []),
+const harness = run(process.execPath, [join(root, 'test/b2.ts'), '--pack', pack, '--task', task,
+  ...(task === 'B5.1' ? ['--case', '^B5\\.1|^AC-017:TTY|^AC-029|^CC-009' + (artium ? '|^B4\\.[123]-host:' : '')] : []),
   ...(artium ? ['--artium', artium] : [])], artium ?? root);
 
 const pending = ['Managed interactive execution and standalone streams are disabled in 0.1.x; see issues #34 and #35.', 'Native Windows and live commissioning remain pending.'];
 let host: object = { outcome: 'skipped', reason: 'Real Artium journeys are opt-in; supply --artium <frozen-checkout>.' };
 if (artium) {
-  const revision = spawnSync('git', ['-C', artium, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
-  assert.equal(revision.status, 0, revision.stderr);
-  const archive = spawnSync('git', ['-C', artium, 'archive', revision.stdout.trim()], { maxBuffer: 64 * 1024 * 1024 });
-  assert.equal(archive.status, 0, archive.stderr.toString());
-  host = { outcome: 'executed', revision: revision.stdout.trim(), sourceArchiveSha256: createHash('sha256').update(archive.stdout).digest('hex') };
+  const result = harness && typeof harness === 'object' && 'artium' in harness ? harness.artium : undefined;
+  if (result && typeof result === 'object' && 'outcome' in result
+    && (result.outcome === 'executed' || result.outcome === 'skipped' || result.outcome === 'failure')) {
+    host = result;
+    if (result.outcome === 'failure') exitCode = 1;
+    if (result.outcome === 'skipped') {
+      pending.push('No hosted cases were selected or completed.');
+      if (exitCode === 0) exitCode = 2;
+    }
+  } else {
+    host = { outcome: 'failure', reason: 'The child verifier did not report hosted case execution.' };
+    exitCode = 1;
+  }
   if (task === 'B5.2') {
     run('pnpm', ['check'], artium);
     if (process.env.ARTIUM_AXI_HYGIENE_DENY_LIST_FILE) run('pnpm', ['hygiene:check'], artium);

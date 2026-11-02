@@ -298,16 +298,18 @@ export async function checkB4Host(context: {
         assert.equal(value.exitCode, 0);
         return session.id;
       };
-      await copy(['workspace:nested/binary.bin', 'synthetic-remote/selected:/files/binary.bin'], workspace);
-      assert.deepEqual(await readFile(join(directory, 'container', 'files', 'binary.bin')), binary);
-      const download = await copy(['synthetic-remote/selected:/files/binary.bin', 'artifact:download.bin']);
-      const artifact = await call(`${prefix}/${download}/artifacts/download.bin`);
-      assert.equal(artifact.status, 200, await artifact.clone().text());
-      assert.deepEqual(Buffer.from(await artifact.arrayBuffer()), binary);
-      assert.equal(artifact.headers.get('x-artium-content-sha256'), createHash('sha256').update(binary).digest('hex'));
-      assert.equal((await call(`${prefix}/${download}/artifacts/download.bin`, 'GET', undefined, other)).status, 404);
-      assert.equal((await call(`${prefix}/${download}`, 'DELETE')).status, 200);
-      assert.equal((await call(`${prefix}/${download}/artifacts/download.bin`)).status, 400);
+      try {
+        await copy(['workspace:nested/binary.bin', 'synthetic-remote/selected:/files/binary.bin'], workspace);
+        assert.deepEqual(await readFile(join(directory, 'container', 'files', 'binary.bin')), binary);
+        const download = await copy(['synthetic-remote/selected:/files/binary.bin', 'artifact:download.bin']);
+        const artifact = await call(`${prefix}/${download}/artifacts/download.bin`);
+        assert.equal(artifact.status, 200, await artifact.clone().text());
+        assert.deepEqual(Buffer.from(await artifact.arrayBuffer()), binary);
+        assert.equal(artifact.headers.get('x-artium-content-sha256'), createHash('sha256').update(binary).digest('hex'));
+        assert.equal((await call(`${prefix}/${download}/artifacts/download.bin`, 'GET', undefined, other)).status, 404);
+        assert.equal((await call(`${prefix}/${download}`, 'DELETE')).status, 200);
+        assert.equal((await call(`${prefix}/${download}/artifacts/download.bin`)).status, 400);
+      } finally { assert.equal((await call(`/v1/tools/kubernetes-axi/workspaces/${workspace}`, 'DELETE')).status, 204); }
     });
     for (const [variant, fileArgs] of [
       ['stdin', ['-f', '-']],
@@ -338,7 +340,10 @@ export async function checkB4Host(context: {
         const selected = await run(['native', '--', 'get', 'configmap', name, '-n', 'synthetic-b3', '-o', 'json']);
         assert.equal(selected.code, 0, selected.stdout + selected.stderr);
         assert.equal(JSON.parse(selected.stdout).data.value, variant);
-      } finally { server.off('request', observe); }
+      } finally {
+        server.off('request', observe);
+        assert.equal((await call(`/v1/tools/kubernetes-axi/workspaces/${workspace}`, 'DELETE')).status, 204);
+      }
     });
     for (const [variant, expected] of [['traversal', 'PATH_REFUSED'], ['link', 'PATH_REFUSED'], ['oversize', 'TRANSFER_LIMIT'], ['credential', 'CREDENTIAL_OUTPUT_REFUSED']] as const) {
       await check(`B4.1-host:${variant} container archives fail before artifact materialization`, async () => {

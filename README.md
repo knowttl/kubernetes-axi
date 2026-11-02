@@ -311,13 +311,16 @@ B5.1 verifies the reduced 0.1.x boundary: interactive and standalone-streaming r
 B5.2 runs cumulative package journeys, strict types and generated-contract checks.
 Artium hosted proof is optional for the 0.1.x package gate.
 Add `--artium <frozen-checkout>` to either B5 command to opt in to hosted verification.
+Both commands then include the B4.1 workspace, B4.2 execution and B4.3 tunnel cases and inherit their hosted results.
+If no hosted cases are selected or completed, the verifier reports pending (exit 2); hosted failures or a missing hosted report produce failure (exit 1).
 B5.2 additionally runs the selected frozen Artium aggregate.
 For B5.2 with `--artium`, private hygiene runs when `ARTIUM_AXI_HYGIENE_DENY_LIST_FILE` supplies the owner's external deny list; otherwise it reports pending.
 Container acceptance requires separate owner evidence and remains pending in the verifier.
 
 - For offline builds, place the official kubectl binaries named in [kubectl-pins.json](kubectl-pins.json) in `vendor/` before installing; the build checks their SHA256 digests and otherwise downloads only from the pinned official URL.
 - `npm test` runs inside a loopback-only Linux namespace, so outbound network access is denied.
-  Only the external Kubernetes API is faked, through a verified TLS loopback server with synthetic identities.
+  Kubernetes command journeys fake only the external Kubernetes API, through a verified TLS loopback server with synthetic identities.
+  Verifier-report regression tests substitute child verifier reports to check completed, omitted, failed and missing hosted results.
 - The package-contract check packs and installs the package offline in a temporary directory, checks the published file contract and admission module exports, and runs the installed bin with `--help` and `--version`.
 - Hosted journeys need a frozen Artium checkout: `python3 scripts/verify.py task B1.2 --mode offline --pack evidence --artium <frozen-checkout>`.
   Without `--artium` they are skipped with an explicit reason.
