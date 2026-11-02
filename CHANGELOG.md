@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.3](https://github.com/knowttl/kubernetes-axi/compare/kubernetes-axi-v0.1.2...kubernetes-axi-v0.1.3) (2026-11-02)
+
+
+### Features
+
+* add global JSON output for CLI responses ([#54](https://github.com/knowttl/kubernetes-axi/issues/54)) ([3025df1](https://github.com/knowttl/kubernetes-axi/commit/3025df16a22050ce786adb85796e0d81d47d7eea))
+
+
+### Bug Fixes
+
+* clarify native configuration edit policy ([#55](https://github.com/knowttl/kubernetes-axi/issues/55)) ([40bf570](https://github.com/knowttl/kubernetes-axi/commit/40bf570abbf3e35eaea58b290bdd4f24dcd1a6d0))
+* correct command help routing and named-read selector validation ([#51](https://github.com/knowttl/kubernetes-axi/issues/51)) ([d246856](https://github.com/knowttl/kubernetes-axi/commit/d2468561ef4187a215e228c18acc58ed6a21b269))
+* reject conflicting execution request timeouts before preparation ([#47](https://github.com/knowttl/kubernetes-axi/issues/47)) ([fe3693d](https://github.com/knowttl/kubernetes-axi/commit/fe3693dc5d2f3cfe53fa6e0ae6a940cf350ef02a))
+* release safe hosted stream output without delay ([#49](https://github.com/knowttl/kubernetes-axi/issues/49)) ([032392b](https://github.com/knowttl/kubernetes-axi/commit/032392bdd10c6f1b15b1f859afda85a0aec20eb2))
+* report hosted Kubernetes verification outcomes accurately ([#52](https://github.com/knowttl/kubernetes-axi/issues/52)) ([5a5fc2f](https://github.com/knowttl/kubernetes-axi/commit/5a5fc2f78a88a0338fbfefcad6aaa22efd72bf03))
+
 ## [0.1.2](https://github.com/knowttl/kubernetes-axi/compare/kubernetes-axi-v0.1.1...kubernetes-axi-v0.1.2) (2026-11-02)
 
 
