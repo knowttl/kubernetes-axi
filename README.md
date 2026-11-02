@@ -176,8 +176,7 @@ kubernetes-axi --profile <name> confirm <request-key> --digest <preview-digest>
 kubernetes-axi native -- completion bash
 ```
 
-The confirmed one-shot command returns its stdout, stderr and remote exit status.
-Repeating confirmation for the same request reports the recorded outcome without running the command again.
+See [Output and exit codes](#output-and-exit-codes) for confirmation replay behavior.
 
 ### Native identity
 
