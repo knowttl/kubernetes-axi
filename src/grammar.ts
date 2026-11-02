@@ -46,6 +46,9 @@ export function parse(args: string[], session = false): Invocation {
   let workflow: Invocation['workflow'];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
+    if (argv.length === 0 && arg === 'help' && index + 1 < args.length) {
+      return parse([...args.slice(0, index), ...args.slice(index + 1), '--help'], session);
+    }
     if (arg === '--credential-fd' || arg.startsWith('--credential-fd=')) {
       const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : args[++index] ?? '';
       if (!/^(?:[3-9]|[1-9][0-9]+)$/.test(value) || own.credentialFd !== undefined) throw new Failure('USAGE', 'Supply --credential-fd once with an inherited private pipe descriptor of at least 3.', 2);
@@ -99,6 +102,7 @@ export function parse(args: string[], session = false): Invocation {
     } else argv.push(arg);
   }
   if (own.credentialFd !== undefined) throw new Failure('USAGE', '--credential-fd is only available before confirm.', 2);
+  if (native && argv[0] === 'help' && argv.length > 1) { argv.shift(); argv.push('--help'); }
   const versionProbe = !native && !workflow && argv.length === 1 && ['--version', '-v', '-V'].includes(argv[0]!);
   if (versionProbe) argv.splice(0, 1, 'version');
   const localCommand = argv.filter(arg => !['--help', '-h'].includes(arg)).join(' ');
@@ -206,6 +210,8 @@ export function parse(args: string[], session = false): Invocation {
       if (command.path === 'get' && flags.has('output') && flags.get('output') !== 'json') throw new Failure('USAGE', 'Compact reads support -o json; use native -- for other output formats.', 2);
       if (command.path === 'get' && (positionals[0] === 'all' || /[,/]/.test(positionals[0]!))) throw new Failure('USAGE', 'Compact get requires one resource type and a separate optional name: get <type> [name]. Use native -- get for TYPE/NAME, comma lists or all.', 2);
       if (command.path === 'get' && flags.has('continue') && (positionals.length !== 1 || !flags.get('continue'))) throw new Failure('USAGE', '--continue requires a nonempty token and a list without a resource name. Keep the original namespace and selectors.', 2);
+      const namedRead = command.path === 'get' ? positionals.length === 2 : command.path.startsWith('top ') && positionals.length === 1;
+      if (namedRead && (flags.has('selector') || flags.has('field-selector'))) throw new Failure('USAGE', 'Selectors require a compact list without a resource name. Omit the name to filter, or omit the selectors for a named read.', 2);
     }
   }
   validateSelection(own);

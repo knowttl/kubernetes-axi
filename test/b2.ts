@@ -640,6 +640,55 @@ try {
   await check('generated-help-offline', async () => {
     const help = await compact('native', '--', 'get', '-Ah'); assert(help.flags.some((flag: any) => flag.name === '--namespace' && flag.short === '-n' && flag.type === 'string')); assert.equal(requests.length, 0);
   });
+  for (const [args, command] of [
+    [['help', 'get'], 'get'],
+    [['help', 'top', 'pod'], 'top pod'],
+    [['help', 'top', 'node'], 'top node'],
+    [['help', 'prepare'], 'prepare'],
+    [['help', 'native', '--', 'get'], 'get'],
+    [['native', '--', 'help', 'get'], 'get'],
+    [['native', '--', 'help', 'top', 'pod'], 'top pod'],
+  ] as const) await check(`issue-6-help-target:${args.join(' ')}`, async () => local(async () => {
+    const output = await compact(...args);
+    assert.equal(output.command, command);
+    assert.notEqual(output.usage, 'help [command]');
+    assert.equal(requests.length, 0);
+  }));
+  for (const args of [
+    ['get', 'pods', 'resource-008', '-l', 'app=nonexistent'],
+    ['get', 'pod', 'resource-008', '--selector=app=nonexistent'],
+    ['get', 'pods', 'resource-008', '--field-selector', 'metadata.name=other'],
+    ['top', 'node', 'synthetic-node', '-l', 'app=nonexistent'],
+    ['top', 'pod', 'synthetic-pod', '-n', 'synthetic-space', '--selector=app=nonexistent'],
+  ]) await check(`issue-11-named-selector:${args.join(' ')}`, async () => {
+    const result = await run(args);
+    assert.equal(result.code, 2, result.stdout);
+    assert.equal((decode(result.stdout) as any).error.code, 'USAGE');
+    assert.equal(requests.length, 0);
+  });
+  await check('issue-11-list-field-selector', async () => {
+    const output = await compact('get', 'pods', '--field-selector', 'metadata.name=resource-008');
+    assert.equal(output.pods[0].name, 'resource-008');
+    assert(requests.some(path => path.includes('fieldSelector=metadata.name%3Dresource-008')));
+  });
+  for (const [type, namespace, file, path] of [
+    ['node', undefined, 'metrics-node-success', '/apis/metrics.k8s.io/v1beta1/nodes/synthetic-node'],
+    ['pod', 'synthetic-space', 'metrics-pod-success', '/apis/metrics.k8s.io/v1beta1/namespaces/synthetic-space/pods/synthetic-pod'],
+  ] as const) await check(`issue-11-named-top-without-selector:${type}`, async () => {
+    const list = fixture(file).body;
+    const body = { ...list.items[0], apiVersion: list.apiVersion, kind: list.kind.replace(/List$/, '') };
+    override = { path, envelope: { status: 200, headers: {}, body } };
+    const output = await compact('top', type, body.metadata.name, ...(namespace ? ['-n', namespace] : []));
+    assert.equal(output.metrics[0].name, body.metadata.name);
+  });
+  for (const [type, namespace, name] of [
+    ['node', undefined, 'synthetic-node'],
+    ['pod', 'synthetic-space', 'synthetic-pod'],
+  ] as const) await check(`issue-11-list-top-selector:${type}`, async () => {
+    const output = await compact('top', type, '-l', 'app=selected', ...(namespace ? ['-n', namespace] : []));
+    assert.equal(output.metrics[0].name, name);
+    assert(requests.some(path => path.includes('labelSelector=app%3Dselected')));
+  });
   await check('diff-staged-limit', async () => {
     const result = await run(['native', '--', 'diff', '-f', 'unopened.yaml']);
     assert.equal((decode(result.stdout) as any).error.code, 'NOT_YET_SUPPORTED_STAGED'); assert.equal(requests.length, 0);
