@@ -180,6 +180,8 @@ kubernetes-axi --native-config /absolute/kubeconfig --trust-exec get pods
 - `ambient` uses native KUBECONFIG precedence, or `~/.kube/config` when unset.
   Native selection is refused when a standard profile is selected.
 - The adapter resolves the context in memory and runs with an isolated temporary kubeconfig; ordinary reads leave native files unchanged.
+- Native server URL path prefixes are preserved for compact reads and native raw reads.
+  With a server ending in `/k8s/clusters/c1`, pass `native -- get --raw=/api/v1/pods`; the CLI adds the configured prefix.
 - For a prepared mutation or execution using an explicit native context, confirm with `--context <original-context>` after the request key and digest.
   The preview's confirmation hint includes the selected context; choosing another context cannot retarget the prepared request.
 - Credential helpers need explicit `--trust-exec`.
