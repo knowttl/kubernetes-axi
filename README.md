@@ -133,7 +133,8 @@ Generated grammar:
 - In 0.1.x, execution of editors, plugins and external render/diff helpers is refused before effects, including when writes are enabled.
   Run those tools outside the CLI, then submit their manifest or patch through preparation, preview and confirmation.
   An opt-in two-stage local execution design is tracked in [issue 30](https://github.com/knowttl/kubernetes-axi/issues/30).
-- Raw reads are classified by their API route, including nested proxy routes and query-based watches.
+- Raw reads are classified by API subresource position, including nested proxy routes, legacy proxy/watch routes and query-based watches.
+  Namespace and object names such as `token`, `proxy`, `portforward`, `exec`, `attach` and `watch` do not by themselves require special capabilities; ordinary reads and mutations keep their usual policy.
   Raw execution, token issuance and proxy connections cannot bypass their explicit capability boundaries.
   Raw resource mutations still require preparation and confirmation.
 - Secrets in output are redacted, including literal, escaped, URI, form and base64 forms.
