@@ -7,9 +7,32 @@ import type { IncomingMessage } from 'node:http';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createConnection } from 'node:net';
+import { setImmediate } from 'node:timers/promises';
 import type { Duplex } from 'node:stream';
 import { portForwardBoundary } from './port-forward.ts';
 import { copyFixtureVariant, portForwardFixture } from './remote.ts';
+
+function observeSocketStop(socket: Duplex): { shutdown: () => void; wait: () => Promise<void> } {
+  let shuttingDown = false;
+  // Observe failures immediately, but report them to the lifecycle that owns cleanup.
+  const stopped = once(socket, 'close', { signal: AbortSignal.timeout(15000) }).then(
+    () => ({ ok: true as const }),
+    (error: unknown) => ({ ok: false as const, error, shuttingDown }),
+  );
+  return {
+    shutdown: () => { shuttingDown = true; },
+    wait: async () => {
+      const result = await stopped;
+      if (result.ok) return;
+      const code = (result.error as NodeJS.ErrnoException)?.code;
+      if (result.shuttingDown && (code === 'EPIPE' || code === 'ECONNRESET')) {
+        console.error(`Expected socket disconnect during lifecycle shutdown: ${code}`);
+        return;
+      }
+      throw result.error;
+    },
+  };
+}
 
 export async function checkB4Host(context: {
   artium: string; directory: string; cli: string; environment: NodeJS.ProcessEnv; server: Server;
@@ -100,7 +123,7 @@ export async function checkB4Host(context: {
     return workspace.id;
   };
   let boundary: Awaited<ReturnType<typeof portForwardBoundary>> | undefined;
-  const forward = async (limits: { lifetimeSeconds?: number } = {}): Promise<{ id: string; stopped: Promise<unknown> }> => {
+  const forward = async (limits: { lifetimeSeconds?: number } = {}): Promise<{ id: string; upstream: Duplex; stopped: ReturnType<typeof observeSocketStop> }> => {
     boundary ??= await portForwardBoundary(directory);
     let upstream: Duplex | undefined;
     portForwardFixture((incoming, socket, head) => {
@@ -116,8 +139,7 @@ export async function checkB4Host(context: {
     const ready = await readiness.json() as { state: string; tunnelReady: boolean };
     assert.equal(ready.state, 'running'); assert.equal(ready.tunnelReady, true);
     assert(upstream);
-    const signal = AbortSignal.timeout(15000);
-    return { ...session, stopped: Promise.race([once(upstream, 'end', { signal }), once(upstream, 'close', { signal })]) };
+    return { ...session, upstream, stopped: observeSocketStop(upstream) };
   };
   try {
     await check('B4.2-host:ungranted exec is denied before dispatch', async () => {
@@ -348,15 +370,81 @@ export async function checkB4Host(context: {
           exchange(tunnel.ports[1].local, 9090, Buffer.from('selected-second-port')),
           exchange(tunnel.ports[0].local, 8080, Buffer.alloc(256 * 1024, 173)),
         ]);
+        session.stopped.shutdown();
         const cancelled = await call(`${prefix}/${session.id}`, 'DELETE');
         assert.equal(cancelled.status, 200);
         await tunnel.closed;
-        await session.stopped;
+        await session.stopped.wait();
         await assert.rejects(new Promise<void>((resolve, reject) => {
           const socket = createConnection({ host: '127.0.0.1', port: tunnel.ports[0].local });
           socket.once('error', reject); socket.once('connect', () => { socket.destroy(); resolve(); });
         }));
-      } finally { controller.abort(); await tunnel.close(); }
+      } finally {
+        session.stopped.shutdown();
+        controller.abort(); await tunnel.close();
+        await call(`${prefix}/${session.id}`, 'DELETE');
+        await session.stopped.wait();
+      }
+    });
+    await check('B4.3-host:client write failure preserves an independent connection and remains observable', async () => {
+      const session = await forward();
+      const { openKubernetesTunnel } = await host('dist/src/cli/kubernetes-tunnel.js');
+      const controller = new AbortController();
+      const tunnel = await openKubernetesTunnel({ serverUrl: url, session: session.id, ports: [8080, 9090],
+        accessToken: headers.authorization!.slice('Bearer '.length), signal: controller.signal });
+      const broken = createConnection({ host: '127.0.0.1', port: tunnel.ports[0].local });
+      const stopped = observeSocketStop(broken);
+      let healthy: Duplex | undefined;
+      const failure = Object.assign(new Error('synthetic client write failure'), { code: 'EPIPE' });
+      try {
+        await once(broken, 'data', { signal: AbortSignal.timeout(15000) });
+        broken.destroy(failure);
+        await setImmediate();
+        healthy = createConnection({ host: '127.0.0.1', port: tunnel.ports[1].local, allowHalfOpen: true });
+        const chunks: Buffer[] = [];
+        healthy.on('data', bytes => chunks.push(bytes));
+        const complete = once(healthy, 'end', { signal: AbortSignal.timeout(15000) });
+        const payload = Buffer.from([0, 255, 128, 1]);
+        healthy.end(payload);
+        await complete;
+        assert.deepEqual(Buffer.concat(chunks), Buffer.concat([Buffer.from('9090:'), payload, Buffer.from(':drained')]));
+        await assert.rejects(stopped.wait, error => error === failure);
+      } finally {
+        session.stopped.shutdown();
+        broken.destroy(); healthy?.destroy(); controller.abort();
+        await tunnel.close();
+        assert.equal((await call(`${prefix}/${session.id}`, 'DELETE')).status, 200);
+        await assert.rejects(stopped.wait, error => error === failure);
+        await session.stopped.wait();
+        await clean();
+      }
+    });
+    await check('B4.3-host:upstream socket failure is observed before the lifecycle awaits cleanup', async () => {
+      const session = await forward();
+      const failure = Object.assign(new Error('synthetic upstream write failure'), { code: 'EPIPE' });
+      try {
+        session.upstream.destroy(failure);
+        // Cross an event-loop turn before the owner awaits the retained failure.
+        await setImmediate();
+        await assert.rejects(session.stopped.wait, error => error === failure);
+      } finally {
+        assert.equal((await call(`${prefix}/${session.id}`, 'DELETE')).status, 200);
+        await assert.rejects(session.stopped.wait, error => error === failure);
+        await clean();
+      }
+    });
+    for (const code of ['EPIPE', 'ECONNRESET']) await check(`B4.3-host:${code} during requested shutdown follows connection cleanup`, async () => {
+      const session = await forward();
+      try {
+        session.stopped.shutdown();
+        session.upstream.destroy(Object.assign(new Error('synthetic shutdown disconnect'), { code }));
+        await setImmediate();
+        await session.stopped.wait();
+      } finally {
+        assert.equal((await call(`${prefix}/${session.id}`, 'DELETE')).status, 200);
+        await session.stopped.wait();
+        await clean();
+      }
     });
     for (const [reason, status] of [['revocation', 403], ['credential revision change', 409], ['expiry', 200]] as const) await check(`B4.3-host:${reason} removes loopback listeners and denies reconnection`, async () => {
       grants(['port-forward']);
@@ -367,16 +455,18 @@ export async function checkB4Host(context: {
         const options = { serverUrl: url, session: session.id, ports: [8080, 9090], accessToken: headers.authorization!.slice('Bearer '.length), signal: controller.signal };
         const tunnel = await openKubernetesTunnel(options);
         const clients: Duplex[] = [];
-        const disconnected: Promise<unknown>[] = [];
+        const disconnected: ReturnType<typeof observeSocketStop>[] = [];
         try {
           for (const port of tunnel.ports) {
             const socket = createConnection({ host: '127.0.0.1', port: port.local });
             clients.push(socket);
             const signal = AbortSignal.timeout(15000);
-            disconnected.push(once(socket, 'close', { signal }));
+            disconnected.push(observeSocketStop(socket));
             const [bytes] = await once(socket, 'data', { signal }) as [Buffer];
             assert(bytes.length > 0);
           }
+          session.stopped.shutdown();
+          for (const stopped of disconnected) stopped.shutdown();
           if (reason === 'revocation') await revoke();
           else if (reason === 'credential revision change') replaceCredential();
           else {
@@ -389,16 +479,22 @@ export async function checkB4Host(context: {
             assert.equal((await call(`${prefix}/${session.id}`)).status, status);
           }
           await tunnel.closed;
-          await session.stopped;
-          await Promise.all(disconnected);
+          await session.stopped.wait();
+          await Promise.all(disconnected.map(stopped => stopped.wait()));
           await assert.rejects(openKubernetesTunnel(options));
           for (const port of tunnel.ports) await assert.rejects(new Promise<void>((resolve, reject) => {
             const socket = createConnection({ host: '127.0.0.1', port: port.local });
             socket.once('error', reject); socket.once('connect', () => { socket.destroy(); resolve(); });
           }));
           await clean();
-        } finally { for (const socket of clients) socket.destroy(); controller.abort(); await tunnel.close(); }
-      } finally { await call(`${prefix}/${session.id}`, 'DELETE'); }
+        } finally {
+          for (const stopped of disconnected) stopped.shutdown();
+          for (const socket of clients) socket.destroy();
+          controller.abort();
+          await tunnel.close();
+          await Promise.all(disconnected.map(stopped => stopped.wait()));
+        }
+      } finally { session.stopped.shutdown(); await call(`${prefix}/${session.id}`, 'DELETE'); await session.stopped.wait(); }
     });
     await check('B4.3-host:ungranted raw and nested proxy effects are denied before forwarding', async () => {
       let upstream = 0;
