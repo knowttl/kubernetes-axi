@@ -119,7 +119,16 @@ export async function readCluster(identity: Identity | undefined, invocation: In
     TMPDIR: directory, TEMP: directory, TMP: directory,
     ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR } : {}),
   };
+  let serverPrefix = '';
   const invoke = async (args: string[], format: 'json' | 'text' | 'native' = 'json'): Promise<unknown> => {
+    // kubectl RequestURI replaces the configured server path instead of appending it.
+    if (serverPrefix) {
+      args = [...args];
+      for (let index = 0; index < args.length && args[index] !== '--'; index++) {
+        if (args[index] === '--raw') args[++index] = serverPrefix + args[index];
+        else if (args[index]!.startsWith('--raw=')) args[index] = `--raw=${serverPrefix}${args[index]!.slice(6)}`;
+      }
+    }
     if (format === 'native' && byteExecution) {
       const exitCode = await byteProcess(binary, ['--kubeconfig', config, '--cache-dir', directory, '--request-timeout=0', ...args], env, byteExecution, redactor);
       return { native: true, stdout: '', stderr: '', exitCode };
@@ -195,6 +204,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       namespace = flags.get('namespace') ?? loaded.namespace;
       source = loaded.source;
       binding = loaded.binding;
+      serverPrefix = loaded.serverPrefix;
       if (['doctor', 'auth status'].includes(invocation.command.path)) return { source, ...loaded.diagnostic, connectivity: 'not checked' };
       await writePrivate(config, JSON.stringify(loaded.config));
     } else await writePrivate(config, JSON.stringify({
@@ -203,6 +213,8 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       users: [{ name: 'selected', user }], contexts: [{ name: 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': 'selected',
     }));
     if (invocation.workflow || invocation.command.effect === 'authorization') {
+      // Guarded workflows supply their own capability-prefixed raw URI.
+      serverPrefix = '';
       const session = await mutationSession(config, invocation, namespace, redactor, cancellation.signal, compatibleVersion, binding);
       const closeIdentity = close;
       close = async () => { await session.close(); await closeIdentity(); };

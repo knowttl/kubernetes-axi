@@ -92,6 +92,7 @@ class PackagedRead(unittest.TestCase):
 
     def test_installed_version_fast_path(self):
         shim = PACKAGE.parent.parent / ".bin" / ("kubernetes-axi.cmd" if os.name == "nt" else "kubernetes-axi")
+        version = json.loads((PACKAGE / "package.json").read_text())["version"]
         baseline_times = []
         version_times = []
         for _ in range(5):
@@ -101,7 +102,7 @@ class PackagedRead(unittest.TestCase):
             started = time.perf_counter()
             result = subprocess.run([str(shim), "--version"], env=self.env, capture_output=True, text=True, timeout=10, shell=os.name == "nt")
             version_times.append(time.perf_counter() - started)
-            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "0.1.0\n", ""))
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, version + "\n", ""))
         self.assertLess(statistics.median(version_times), statistics.median(baseline_times) * 4)
         self.assertEqual(self.api.requests, [])
 

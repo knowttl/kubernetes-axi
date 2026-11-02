@@ -712,6 +712,58 @@ try {
   });
   await checkRemote({ server, run, check, environment, directory, requests, cli });
   await checkMutations({ run, check, environment, directory, requests, cli });
+  await check('issue-16-native-mutation-context-confirmation', async () => local(async () => {
+    environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    const settings = structuredClone(nativeSettings);
+    settings.contexts[1]!.context.namespace = 'synthetic-b3';
+    writeFileSync(nativeFile, JSON.stringify(settings));
+    const selected = ['--native-config', nativeFile];
+    const target = '/api/v1/namespaces/synthetic-b3/configmaps/context-selected';
+    const decoy = '/api/v1/namespaces/synthetic-b3/configmaps/context-decoy';
+    try {
+      for (const name of ['context-selected', 'context-decoy']) {
+        const prepared = await compact(...selected, 'prepare', '--', 'create', 'configmap', name, '-n', 'synthetic-b3', '--from-literal=value=before');
+        const preview = await compact(...selected, 'preview', prepared.request);
+        assert.equal((await compact(...selected, 'confirm', prepared.request, '--digest', preview.digest)).state, 'complete');
+      }
+      const before = await run([...selected, 'native', '--', 'get', `--raw=${decoy}`]);
+      assert.equal(before.code, 0, before.stdout + before.stderr);
+      const prepared = await compact(...selected, 'prepare', '--', 'patch', 'configmap', 'context-selected', '--context=other', '--type=merge', '-p', '{"data":{"value":"context-selected"}}');
+      const preview = await compact(...selected, 'preview', prepared.request);
+      const start = requests.length;
+      const wrong = await run([...selected, 'confirm', prepared.request, '--digest', preview.digest]);
+      assert.equal((decode(wrong.stdout) as { error: { code: string } }).error.code, 'PREVIEW_MISMATCH');
+      assert.equal(requests.length, start, 'Wrong context must fail before API contact');
+      const confirmed = await compact(...selected, 'confirm', prepared.request, '--digest', preview.digest, '--context', 'other');
+      assert.equal(confirmed.state, 'complete');
+      assert.match(preview.help[0], /--context 'other'/);
+      const read = await run([...selected, 'native', '--', 'get', `--raw=${target}`]);
+      assert.equal(read.code, 0, read.stdout + read.stderr);
+      assert.equal((JSON.parse(read.stdout) as { data: { value: string } }).data.value, 'context-selected');
+      const after = await run([...selected, 'native', '--', 'get', `--raw=${decoy}`]);
+      assert.equal(after.code, 0, after.stdout + after.stderr);
+      assert.deepEqual(JSON.parse(after.stdout), JSON.parse(before.stdout));
+    } finally {
+      writeFileSync(nativeFile, JSON.stringify(nativeSettings)); environment.KUBERNETES_AXI_READ_ONLY = 'true';
+    }
+  }));
+  for (const operation of ['exec', 'attach'] as const) await check(`issue-22-native-${operation}-context-confirmation`, async () => local(async () => {
+    environment.KUBERNETES_AXI_READ_ONLY = 'false';
+    const settings = structuredClone(nativeSettings);
+    settings.contexts[0]!.context.namespace = 'synthetic-remote';
+    writeFileSync(nativeFile, JSON.stringify(settings));
+    const selected = ['--native-config', nativeFile];
+    try {
+      const prepared = await compact(...selected, 'prepare', '--', operation, 'selected', '--context=local', '-c', 'selected-container', ...(operation === 'exec' ? ['--', 'true'] : ['--quiet']));
+      const preview = await compact(...selected, 'preview', prepared.request);
+      const result = await run([...selected, 'confirm', prepared.request, '--digest', preview.digest]);
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), operation === 'exec' ? ['true'] : []);
+      assert.equal(result.stderr, 'diagnostic\n');
+    } finally {
+      writeFileSync(nativeFile, JSON.stringify(nativeSettings)); environment.KUBERNETES_AXI_READ_ONLY = 'true';
+    }
+  }));
   if (selectedArtium) await checkB4Host({ artium: selectedArtium, directory, cli, environment, server, check, run });
   await check('R6-native-prefix-all-operation-paths', async () => local(async () => {
     variant = 'native-prefix'; environment.KUBERNETES_AXI_READ_ONLY = 'false';
@@ -729,6 +781,11 @@ try {
       const preview = await native(['preview', saved.request]);
       const committed = await native(['confirm', saved.request, '--digest', preview.digest]);
       assert.equal(committed.state, 'complete');
+      for (const raw of [['--raw=/api/v1/namespaces/synthetic-b3/configmaps/prefixed'], ['--raw', '/api/v1/namespaces/synthetic-b3/configmaps/prefixed']]) {
+        const read = await run(['--native-config', nativeFile, 'native', '--', '--context=local', 'get', ...raw]);
+        assert.equal(read.code, 0, read.stdout + read.stderr);
+        assert.equal((JSON.parse(read.stdout) as { data: { value: string } }).data.value, 'selected');
+      }
       await native(['server-dry-run', '--', 'patch', 'configmap', 'prefixed', '-n', 'synthetic-b3', '--type=merge', '-p', '{"data":{"value":"dry-run"}}']);
       assert.equal((await native(['auth', 'whoami'])).reviews[0].status.userInfo.username, 'synthetic-identity');
       assert.equal((await native(['auth', 'can-i', 'get', 'configmaps', '-n', 'synthetic-b3'])).reviews[0].status.allowed, true);

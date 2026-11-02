@@ -24,7 +24,7 @@ interface Reply { status: number; body: Document }
 interface Snapshot { path: string; objects: { name: string; namespace: string; uid: string; version: string }[]; absent: boolean; collection: boolean }
 interface Change { operation: string; method: string; path: string; target: string; contentType: string; body: unknown; wire: string; inputBase64: string }
 interface Execution { argv: string[]; target: string; route: string; query: string; stdinSha256?: string; terminal?: boolean }
-interface Plan { version: 1; key: string; binding: string; command: string; namespace: string; awaitDeletion: boolean; snapshots: Snapshot[]; changes: Change[]; display: object; execution?: Execution }
+interface Plan { version: 1; key: string; binding: string; command: string; namespace: string; nativeContext?: string; awaitDeletion: boolean; snapshots: Snapshot[]; changes: Change[]; display: object; execution?: Execution }
 interface Saved { plan: Plan; digest: string; state: 'prepared' | 'running' | 'complete' | 'failed'; results: Result[]; exitCode?: number }
 interface Result { operation: string; method: string; path: string; outcome: string; upstreamStatus?: number; observed?: Snapshot['objects'] }
 interface Config {
@@ -67,7 +67,7 @@ async function savedRequest(invocation: Invocation): Promise<{ saved: Saved; dir
 export async function preview(invocation: Invocation): Promise<object> {
   const { saved } = await savedRequest(invocation);
   return { request: saved.plan.key, digest: saved.digest, state: saved.state, ...saved.plan.display,
-    help: [`${prefix(invocation)} confirm ${saved.plan.key} --digest ${saved.digest}`] };
+    help: [`${prefix(invocation)} confirm ${saved.plan.key} --digest ${saved.digest}${saved.plan.nativeContext === undefined ? '' : ` --context '${saved.plan.nativeContext.replaceAll("'", "'\\''")}'`}`] };
 }
 
 function publicBody(value: unknown, secret = false): unknown {
@@ -449,6 +449,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
       const signingKey = randomBytes(32).toString('hex');
       const display = redactor.value({ command: invocation.command.path, namespace, selected: [...snapshots.values()], changes: changes.map(change => ({ operation: change.operation, method: change.method, path: change.path, change: publicBody(change.body, /\/secrets(?:\/|\?|$)/.test(change.path)) })), ...(execution ? { execution } : {}) }) as object;
       const plan: Plan = { version: 1, key, binding: mac(signingKey, nativeBinding ?? config), namespace, command: invocation.command.path,
+        ...(invocation.nativeConfig && config['current-context'] !== undefined ? { nativeContext: config['current-context'] } : {}),
         awaitDeletion: invocation.command.path === 'drain' || invocation.command.path === 'delete' && invocation.flags.get('wait') !== 'false', snapshots: [...snapshots.values()], changes, display, ...(execution ? { execution } : {}) };
       const saved: Saved = { plan, digest: mac(signingKey, plan), state: 'prepared', results: [] };
       await writePrivate(join(directory, 'key'), signingKey);

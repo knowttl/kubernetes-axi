@@ -52,7 +52,7 @@ export function parse(args: string[], session = false): Invocation {
       continue;
     }
     if (argv.length === 0 && ['prepare', 'preview', 'confirm', 'server-dry-run'].includes(arg) && args[index + 1] === '--help' && index + 2 === args.length) {
-      const uses: Record<string, string> = { prepare: 'prepare -- <Kubernetes mutation>', preview: 'preview <request-key>', confirm: 'confirm <request-key> --digest <preview-digest>', 'server-dry-run': 'server-dry-run -- <Kubernetes mutation>' };
+      const uses: Record<string, string> = { prepare: 'prepare -- <Kubernetes mutation>', preview: 'preview <request-key>', confirm: 'confirm <request-key> --digest <preview-digest> [--context <native-context>]', 'server-dry-run': 'server-dry-run -- <Kubernetes mutation>' };
       return { ...own, native: false, command: { path: arg, aliases: [], flags: [], use: uses[arg]!, description: 'Prepare frozen targets, preview them offline, confirm their exact digest, or explicitly request server dry run.', effect: arg === 'preview' ? 'localRead' : 'clusterWrite' }, argv: [], positionals: [], flags: new Map(), help: true, home: false };
     }
     if (argv.length === 0 && ['prepare', 'server-dry-run'].includes(arg)) {
@@ -64,10 +64,21 @@ export function parse(args: string[], session = false): Invocation {
     if (argv.length === 0 && ['preview', 'confirm'].includes(arg)) {
       const key = args[index + 1] ?? '';
       const tail = args.slice(index + 2);
-      if (!/^[a-f0-9-]{36}$/.test(key) || (arg === 'preview' ? tail.length !== 0 : tail.length !== 2 || tail[0] !== '--digest' || !/^[a-f0-9]{64}$/.test(tail[1] ?? ''))) throw new Failure('USAGE', 'Use preview <request-key> or confirm <request-key> --digest <preview-digest>.', 2);
-      workflow = { kind: arg as 'preview' | 'confirm', key, digest: tail[1] ?? '' };
+      const flags = new Map<string, string>();
+      if (arg === 'confirm') {
+        for (let offset = 0; offset < tail.length; offset++) {
+          const token = tail[offset]!;
+          const name = token.split('=')[0]!;
+          const value = token.includes('=') ? token.slice(token.indexOf('=') + 1) : tail[++offset];
+          if (!['--digest', '--context'].includes(name) || !value || value.startsWith('--') || flags.has(name.slice(2))) throw new Failure('USAGE', 'Use confirm <request-key> --digest <preview-digest> [--context <native-context>].', 2);
+          flags.set(name.slice(2), value);
+        }
+      }
+      if (!/^[a-f0-9-]{36}$/.test(key) || (arg === 'preview' ? tail.length !== 0 : !/^[a-f0-9]{64}$/.test(flags.get('digest') ?? ''))) throw new Failure('USAGE', 'Use preview <request-key> or confirm <request-key> --digest <preview-digest> [--context <native-context>].', 2);
+      if (flags.has('context') && !own.nativeConfig) throw new Failure('USAGE', '--context on confirmation requires --native-config.', 2);
+      workflow = { kind: arg as 'preview' | 'confirm', key, digest: flags.get('digest') ?? '' };
       validateSelection(own);
-      return { ...own, native: false, workflow, command: { path: arg, aliases: [], flags: [], use: arg, description: 'Inspect or confirm a frozen request.', effect: arg === 'preview' ? 'localRead' : 'clusterWrite' }, argv: [], positionals: [], flags: new Map(), help: false, home: false };
+      return { ...own, native: false, workflow, command: { path: arg, aliases: [], flags: [], use: arg, description: 'Inspect or confirm a frozen request.', effect: arg === 'preview' ? 'localRead' : 'clusterWrite' }, argv: [], positionals: [], flags, help: false, home: false };
     }
     if (arg === 'native' && argv.length === 0) {
       if (args[index + 1] !== '--') throw new Failure('USAGE', 'Use kubernetes-axi [--profile <name>] native -- <kubectl arguments>.', 2);
