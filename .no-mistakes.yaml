@@ -1,10 +1,4 @@
 agent: codex
-agent_args_override:
-  codex:
-    - -m
-    - gpt-6.1-sol
-    - -c
-    - model_reasoning_effort="medium"
 no_ci: true
 commands:
   prepare: npm ci --offline
