@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, fork, spawn } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
@@ -8,7 +9,6 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
 import { mutationFixture } from './b3.ts';
-import './native-binding.ts';
 import type { HostTransport } from '../src/transport.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'kubernetes-axi-transport-'));
@@ -22,7 +22,7 @@ const nativeConfig = { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'sel
   users: [{ name: 'selected', user: { token: 'synthetic-token' } }], contexts: [{ name: 'selected', context: { cluster: 'selected', user: 'selected' } }], 'current-context': 'selected' };
 writeFileSync(native, JSON.stringify(nativeConfig), { mode: 0o600 });
 const environment = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('KUBERNETES_AXI_'))),
-  KUBERNETES_AXI_CONFIG: config, SYNTHETIC_TOKEN: 'synthetic-token', SAME_TOKEN: 'synthetic-token', OTHER_TOKEN: 'different-token', KUBERNETES_AXI_READ_ONLY: 'false', TMPDIR: directory };
+  KUBERNETES_AXI_CONFIG: config, SYNTHETIC_TOKEN: 'synthetic-token', SAME_TOKEN: 'synthetic-token', OTHER_TOKEN: 'different-token', KUBERNETES_AXI_READ_ONLY: 'false', TMPDIR: directory, XDG_CONFIG_HOME: directory };
 const calls: { method: string; path: string; host: string; authorization: string; proxyAuthorization: string | undefined }[] = [];
 let refusal = false;
 let redirect = false;
@@ -121,6 +121,22 @@ try {
   calls.length = 0;
   assert.equal((decode((await run(['confirm', second.request, '--digest', secondPreview.digest], alias)).stdout) as any).error.code, 'PREVIEW_MISMATCH');
   assert.equal(calls.length, 0);
+  writeFileSync(native, JSON.stringify(nativeConfig));
+  const nativeArgs = ['--native-config', native];
+  const nativePrepared = await output([...nativeArgs, 'prepare', '--', 'create', 'configmap', 'legacy-binding', '-n', 'synthetic-b3', '--from-literal=value=legacy'], alias);
+  const requestDirectory = join(directory, 'kubernetes-axi', 'requests', nativePrepared.request);
+  const requestFile = join(requestDirectory, 'request.json');
+  const savedNative = JSON.parse(readFileSync(requestFile, 'utf8'));
+  const signingKey = readFileSync(join(requestDirectory, 'key'), 'utf8');
+  const legacyBinding = '{"cluster":{"server":"https://cluster.invalid:6443/prefix","certificate-authority-data":"c3ludGhldGljLWNh"},"user":{"token":"synthetic-token"},"auth":"token","context":"selected","namespace":"default"}';
+  savedNative.plan.binding = createHmac('sha256', signingKey).update(JSON.stringify(legacyBinding)).digest('hex');
+  savedNative.digest = createHmac('sha256', signingKey).update(JSON.stringify(savedNative.plan)).digest('hex');
+  writeFileSync(requestFile, JSON.stringify(savedNative));
+  const nativePreview = await output([...nativeArgs, 'preview', nativePrepared.request], alias);
+  calls.length = 0;
+  const nativeConfirmed = await output([...nativeArgs, 'confirm', nativePrepared.request, '--digest', nativePreview.digest], alias);
+  assert.equal(nativeConfirmed.state, 'complete');
+  assert(calls.some(call => call.method === 'POST' && call.path.startsWith('/prefix/api/v1/namespaces/synthetic-b3/configmaps')));
   writeFileSync(config, JSON.stringify({ version: 1, profiles: { selected: profile } }));
   const firstKey = join(directory, 'first.key');
   const secondKey = join(directory, 'second.key');
