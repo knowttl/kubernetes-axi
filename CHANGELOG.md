@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/knowttl/kubernetes-axi/compare/kubernetes-axi-v0.1.5...kubernetes-axi-v0.1.6) (2026-11-13)
+
+
+### Bug Fixes
+
+* bind resolved credentials independently of secret references ([#64](https://github.com/knowttl/kubernetes-axi/issues/64)) ([bfcb9db](https://github.com/knowttl/kubernetes-axi/commit/bfcb9db76d73485ca60af5d5bc6feebb3a3ac3b5))
+
 ## [0.1.5](https://github.com/knowttl/kubernetes-axi/compare/kubernetes-axi-v0.1.4...kubernetes-axi-v0.1.5) (2026-11-13)
 
 
