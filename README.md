@@ -282,9 +282,9 @@ kubectl reads use a temporary capability-protected loopback HTTP bridge to the s
 Redirects from the read bridge are refused so kubectl cannot leave the relay.
 Original cluster URLs, CA trust and identity remain the inputs to preparation and confirmation binding; relay addresses never enter those digests.
 
-With host transport enabled, client-certificate identities, credential helpers and native TLS server-name overrides fail with `HOST_TRANSPORT_UNAVAILABLE`.
+Host transport supports static bearer tokens only; client-certificate identities, credential helpers and native TLS server-name overrides fail with `HOST_TRANSPORT_UNAVAILABLE`.
 Hosted byte sessions and upgrade operations (`exec`, `attach`, `port-forward`) also fail explicitly because this relay contract cannot carry them.
-Hosts launching the IPC session worker must pass the setting in the message's `transport` field; the worker refuses it before starting a session.
+Hosts enabling transport when launching the IPC session worker must pass the setting in the message's `transport` field; the worker refuses it before starting a session.
 These refusals never fall back to a direct cluster connection.
 
 ## Output and exit codes
