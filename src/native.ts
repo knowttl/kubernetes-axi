@@ -5,7 +5,6 @@ import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Failure } from './errors.js';
-import { identityBinding } from './identity-binding.js';
 import { readPrivate, writePrivate } from './private-files.js';
 import type { Redactor } from './redaction.js';
 
@@ -73,7 +72,7 @@ export async function nativeConfig(binary: string, selection: string, context: s
   if (!cluster['certificate-authority-data']) throw new Failure('CONFIG_INVALID', 'Supply explicit native certificate authority trust.');
   if (!user.exec && !user.token && !(user['client-certificate-data'] && user['client-key-data'])) throw new Failure('AUTH_REQUIRED', 'Supply authentication in the selected native identity.');
   redactor.register(typeof user.token === 'string' ? user.token : undefined, ...['client-key-data', 'client-certificate-data'].map(key => typeof user[key] === 'string' ? Buffer.from(user[key], 'base64').toString() : undefined));
-  const binding = identityBinding(cluster, user, { auth: user.exec ? 'exec' : user.token ? 'token' : 'certificate', context: name, namespace: selected.namespace ?? 'default' });
+  const binding = JSON.stringify({ cluster, user, auth: user.exec ? 'exec' : user.token ? 'token' : 'certificate', context: name, namespace: selected.namespace ?? 'default' });
   let close = async (): Promise<void> => {};
   if (user.exec) {
     if (!trustExec) throw new Failure('AUTH_HELPER_UNTRUSTED', 'Review the selected helper, then opt in with --trust-exec. Its existing cache remains helper-owned.');

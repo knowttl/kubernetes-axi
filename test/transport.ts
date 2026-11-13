@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
 import { mutationFixture } from './b3.ts';
+import './native-binding.ts';
 import type { HostTransport } from '../src/transport.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'kubernetes-axi-transport-'));
