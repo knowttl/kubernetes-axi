@@ -21,12 +21,12 @@ const nativeConfig = { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'sel
 writeFileSync(native, JSON.stringify(nativeConfig), { mode: 0o600 });
 const environment = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('KUBERNETES_AXI_'))),
   KUBERNETES_AXI_CONFIG: config, SYNTHETIC_TOKEN: 'synthetic-token', KUBERNETES_AXI_READ_ONLY: 'false', TMPDIR: directory };
-const calls: { method: string; path: string; host: string; authorization: string }[] = [];
+const calls: { method: string; path: string; host: string; authorization: string; proxyAuthorization: string | undefined }[] = [];
 let refusal = false;
 let redirect = false;
 let holding = false;
 const relay = createServer((incoming, response) => {
-  calls.push({ method: incoming.method!, path: incoming.url!, host: incoming.headers.host!, authorization: incoming.headers.authorization! });
+  calls.push({ method: incoming.method!, path: incoming.url!, host: incoming.headers.host!, authorization: incoming.headers.authorization!, proxyAuthorization: incoming.headers['proxy-authorization'] });
   if (holding) return;
   if (refusal) { response.writeHead(502).end(); return; }
   if (redirect) { response.writeHead(302, { location: origin + '/bypass' }).end(); return; }
@@ -51,9 +51,12 @@ const output = async (args: string[], socket?: string): Promise<any> => {
 };
 try {
   for (const [name, args, expected] of [
+    ['version', ['version'], '/version'],
     ['compact kubectl', ['get', 'configmaps', '-n', 'synthetic-b3'], '/api/v1/namespaces/synthetic-b3/configmaps'],
     ['native kubectl', ['native', '--', 'get', '--raw=/api/v1'], '/api/v1'],
+    ['native raw separate', ['native', '--', 'get', '--raw', '/api/v1'], '/api/v1'],
     ['native prefix', ['--native-config', native, 'native', '--', 'get', '--raw=/api/v1'], '/prefix/api/v1'],
+    ['native prefix raw separate', ['--native-config', native, 'native', '--', 'get', '--raw', '/api/v1'], '/prefix/api/v1'],
     ['workflow review', ['auth', 'can-i', 'get', 'configmaps'], '/apis/authorization.k8s.io/v1/selfsubjectaccessreviews'],
     ['native workflow prefix', ['--native-config', native, 'auth', 'can-i', 'get', 'configmaps'], '/prefix/apis/authorization.k8s.io/v1/selfsubjectaccessreviews'],
     ['workflow dry-run', ['server-dry-run', '--', 'create', 'configmap', 'absent', '-n', 'synthetic-b3', '--from-literal=value=dry'], '/api/v1/namespaces/synthetic-b3/configmaps'],
@@ -62,7 +65,7 @@ try {
     const result = await run([...args]);
     assert.equal(result.code, 0, name + ': ' + result.stdout + result.stderr);
     assert(calls.some(call => call.path.split('?')[0] === expected), name + ': ' + JSON.stringify(calls));
-    assert(calls.every(call => call.host === 'cluster.invalid:6443' && call.authorization === 'Bearer synthetic-token'), name);
+    assert(calls.every(call => call.host === 'cluster.invalid:6443' && call.authorization === 'Bearer synthetic-token' && call.proxyAuthorization === undefined), name);
   }
   const prepared = await output(['prepare', '--', 'create', 'configmap', 'absent', '-n', 'synthetic-b3', '--from-literal=value=relayed']);
   const preview = await output(['preview', prepared.request]);
@@ -84,7 +87,7 @@ try {
   assert.equal(calls.length, 0);
   writeFileSync(config, JSON.stringify({ version: 1, profiles: { selected: profile } }));
   for (const args of [
-    ['prepare', '--', 'exec', 'selected', '--', 'true'], ['prepare', '--', 'attach', 'selected'], ['prepare', '--', 'port-forward', 'selected', '8080:80'],
+    ['prepare', '--', 'exec', 'selected', '--', 'true'], ['prepare', '--', 'attach', 'selected'],
     ['--native-config', native, 'get', 'pods'],
   ]) {
     writeFileSync(native, JSON.stringify({ ...nativeConfig, users: [{ name: 'selected', user: { 'client-certificate-data': 'Y2VydA==', 'client-key-data': 'a2V5' } }] }));

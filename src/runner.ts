@@ -256,7 +256,7 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       const finished = await session.finish();
       return finished;
     }
-    const relayed = await transport.kubectl(originalConfig, cancellation.signal);
+    const relayed = await transport.kubectl(originalConfig, cancellation.signal, redactor);
     const closeIdentity = close;
     close = async () => { await relayed.close(); await closeIdentity(); };
     if (relayed.prefix !== undefined) {
