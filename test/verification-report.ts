@@ -10,7 +10,7 @@ for (const [scenario, optIn, status, outcome, hostedOutcome, names] of [
   ['missing-report', true, 1, 'failure', 'failure', []],
   ['completed', false, 0, 'pass', 'skipped', []],
 ] as const) {
-  const result = spawnSync(process.execPath, ['--import', join(root, 'test/fixtures/verifier-child.mjs'),
+  const result = spawnSync(process.execPath, ['--import', join(root, 'test/fixtures/verifier-child.ts'),
     join(root, 'scripts/verify-b5.ts'), 'B5.1', join(root, 'evidence'), ...(optIn ? [join(root, 'synthetic-host')] : [])], {
     cwd: root, encoding: 'utf8', timeout: 10000,
     env: { ...process.env, KUBERNETES_AXI_TEST_HOST_RESULT: scenario },
