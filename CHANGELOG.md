@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/knowttl/kubernetes-axi/compare/kubernetes-axi-v0.1.4...kubernetes-axi-v0.1.5) (2026-11-13)
+
+
+### Features
+
+* support endpoint-scoped host relay TLS capabilities ([#62](https://github.com/knowttl/kubernetes-axi/issues/62)) ([b9ed339](https://github.com/knowttl/kubernetes-axi/commit/b9ed339f60317a6355aafae5096de6bd17b2613b))
+
 ## [0.1.4](https://github.com/knowttl/kubernetes-axi/compare/kubernetes-axi-v0.1.3...kubernetes-axi-v0.1.4) (2026-11-13)
 
 
