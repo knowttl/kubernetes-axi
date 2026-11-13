@@ -1,4 +1,3 @@
-agent: codex
 no_ci: true
 commands:
   prepare: npm ci --offline
