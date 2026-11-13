@@ -120,6 +120,8 @@ Generated grammar:
   The child gets a temporary loopback capability, not the upstream credentials.
 - `preview` reads only the saved snapshot and makes no API request.
   Its digest covers the cluster and identity binding, namespace, selected objects and the exact bytes to be forwarded.
+  Identity binding hashes the resolved credentials, original cluster origin, CA trust and authentication type; SecretRef file paths and environment variable names do not affect it.
+  This binding change invalidates previews prepared by earlier versions; prepare and preview those requests again before confirming.
   Secret payloads, last-applied configuration and configured credential values are redacted from the public preview.
   The private saved request under `requests/<request-key>` beside the config file retains the original payloads, including Secret data, so protect that directory.
 - `confirm` needs the exact digest and original identity, rechecks every target, uses UID and resourceVersion preconditions and claims the request atomically.
