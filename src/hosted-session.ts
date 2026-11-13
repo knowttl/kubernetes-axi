@@ -15,7 +15,10 @@ import { ClusterTransport, type HostTransport } from './transport.js';
 interface Message { action: 'start' | 'confirm'; args?: string[]; digest?: string; stdinBase64?: string; inputFile?: 'stdin.bin'; timeoutMs?: number; transport?: HostTransport }
 const valid = new Ajv().compile<Message>({ type: 'object', additionalProperties: false, required: ['action'], properties: {
   action: { enum: ['start', 'confirm'] },
-  transport: { type: 'object', additionalProperties: false, required: ['socketPath'], properties: { socketPath: { type: 'string' } } },
+  transport: { type: 'object', additionalProperties: false, required: ['socketPath'], properties: {
+    socketPath: { type: 'string' }, endpoint: { type: 'string' }, serverName: { type: 'string' },
+    capabilities: { type: 'object', additionalProperties: false, properties: { clientCertificate: { type: 'boolean' }, serverName: { type: 'boolean' } } },
+  } },
   args: { type: 'array', maxItems: 256, items: { type: 'string', maxLength: 8192 } },
   digest: { type: 'string', pattern: '^[a-f0-9]{64}$' },
   stdinBase64: { type: 'string', maxLength: 4 * Math.ceil(100 * 1024 * 1024 / 3), pattern: '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$' },

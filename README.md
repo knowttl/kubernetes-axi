@@ -280,9 +280,18 @@ Static bearer tokens are sent through that socket.
 The host must scope its upstream trust to that original endpoint.
 kubectl reads use a temporary capability-protected loopback HTTP bridge to the socket; workflow HTTPS requests use it directly.
 Redirects from the read bridge are refused so kubectl cannot leave the relay.
-Original cluster URLs, CA trust and identity remain the inputs to preparation and confirmation binding; relay addresses never enter those digests.
+Original cluster URLs, CA trust and identity, including its authentication type, remain the inputs to preparation and confirmation binding; relay addresses never enter those digests.
 
-Host transport supports static bearer tokens only; client-certificate identities, credential helpers and native TLS server-name overrides fail with `HOST_TRANSPORT_UNAVAILABLE`.
+Hosts that preconfigure their relay for the selected managed client-certificate identity can pass `transport: { socketPath, endpoint: 'https://cluster.example:6443', capabilities: { clientCertificate: true } }`.
+The host already owns the certificate and private key and must install them in its relay's endpoint-scoped TLS options before invoking kubernetes-axi.
+No certificate or private key is sent back to the host or over the relay socket.
+Native kubeconfig client-certificate identities remain refused because the host has not selected them.
+For a preconfigured TLS name, add `capabilities: { serverName: true }` and `serverName: 'api.cluster.example'`; both capabilities can be declared together.
+A native `tls-server-name` override must equal the declared `serverName`.
+Capabilities require `endpoint` to match the original HTTPS cluster origin, including its port; they never grant trust to another endpoint.
+The host must declare only the capabilities it has configured for the selected identity, retain exact certificate pins, and verify the upstream chain, validity and hostname on the data connection.
+Without the corresponding capability, certificate identities and TLS server-name overrides retain the existing `HOST_TRANSPORT_UNAVAILABLE` refusal.
+Credential helpers remain refused regardless of capabilities.
 Hosted byte sessions and upgrade operations (`exec`, `attach`, `port-forward`) also fail explicitly because this relay contract cannot carry them.
 Hosts enabling transport when launching the IPC session worker must pass the setting in the message's `transport` field; the worker refuses it before starting a session.
 These refusals never fall back to a direct cluster connection.
