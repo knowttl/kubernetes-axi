@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -126,27 +126,57 @@ try {
   holding = true;
   const reached = once(relay, 'request');
   const observeListener = `import { Server } from 'node:http'; const listen = Server.prototype.listen; Server.prototype.listen = function (...args) { this.once('listening', () => process.send({ port: this.address().port })); return listen.apply(this, args); };`;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', observeListener + launcher(alias), '--', 'version'], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+  const child = spawn(process.execPath, ['--input-type=module', '-e', observeListener + launcher(alias), '--', 'version'], { env: environment, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let logs = '';
+  child.stdout!.on('data', chunk => { logs += chunk.toString(); });
+  child.stderr!.on('data', chunk => { logs += chunk.toString(); });
   const exited = once(child, 'close', { signal: AbortSignal.timeout(15000) });
   const listening = once(child, 'message', { signal: AbortSignal.timeout(15000) });
   const [incoming] = await reached;
   const [{ port }] = await listening as [{ port: number }];
-  const bridgeUrl = `http://127.0.0.1:${port}`;
-  const callCount = calls.length;
-  for (const [method, authorization] of [['GET', ''], ['GET', 'Bearer wrong'], ['POST', '']]) {
+  const workdir = readdirSync(directory).find(name => name.startsWith('kubernetes-axi-'))!;
+  const kubeconfigPath = join(directory, workdir, 'config.json');
+  assert.equal(statSync(kubeconfigPath).mode & 0o777, 0o600);
+  const kubeconfig = JSON.parse(readFileSync(kubeconfigPath, 'utf8'));
+  const proxy = new URL(kubeconfig.clusters[0].cluster['proxy-url']);
+  const credential = proxy.password;
+  assert(credential);
+  assert.equal(Number(proxy.port), port);
+  const authorization = `Basic ${Buffer.from(`${proxy.username}:${credential}`).toString('base64')}`;
+  const secretForms = [credential, authorization.slice(6)];
+  if (process.platform === 'linux') {
+    const children = readFileSync(`/proc/${child.pid}/task/${child.pid}/children`, 'utf8').trim().split(/\s+/).filter(Boolean);
+    assert(children.length > 0);
+    for (const pid of [String(child.pid), ...children]) {
+      for (const file of ['cmdline', 'environ']) {
+        const value = readFileSync(`/proc/${pid}/${file}`, 'utf8');
+        for (const secret of secretForms) assert(!value.includes(secret));
+      }
+    }
+  }
+  calls.length = 0;
+  holding = false;
+  for (const proxyAuthorization of [undefined, 'Basic wrong']) {
     const status = await new Promise<number | undefined>((resolve, reject) => {
-      const call = request(bridgeUrl + '/api/v1/secrets', { method, headers: { authorization } }, response => { response.resume(); resolve(response.statusCode); });
+      const call = request({ host: '127.0.0.1', port, path: 'http://cluster.invalid:6443/version', headers: proxyAuthorization ? { 'proxy-authorization': proxyAuthorization } : {} }, response => { response.resume(); resolve(response.statusCode); });
       call.on('error', reject);
       call.end();
     });
     assert.equal(status, 403);
   }
-  assert.equal(calls.length, callCount);
-  assert.equal(calls.at(-1)!.authorization, 'Bearer synthetic-token');
+  assert.equal(calls.length, 0);
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    const call = request({ host: '127.0.0.1', port, path: 'http://cluster.invalid:6443/version', headers: { 'proxy-authorization': authorization } }, response => { response.resume(); resolve(response.statusCode); });
+    call.on('error', reject);
+    call.end();
+  });
+  assert.equal(status, 200);
+  assert.deepEqual(calls.map(call => [call.path, call.authorization, call.proxyAuthorization]), [['/version', 'Bearer synthetic-token', undefined]]);
   const disconnected = once(incoming.socket, 'close', { signal: AbortSignal.timeout(15000) });
   child.kill('SIGTERM');
   await exited;
   await disconnected;
+  for (const secret of secretForms) assert(!logs.includes(secret));
   console.log('Host transport passed: route table, original identity, relay rotation, refusals and fail-closed reads');
 } finally {
   relay.closeAllConnections();
