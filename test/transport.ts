@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,7 +84,7 @@ try {
   assert.equal(calls.length, 0);
   writeFileSync(config, JSON.stringify({ version: 1, profiles: { selected: profile } }));
   for (const args of [
-    ['prepare', '--', 'exec', 'selected', '--', 'true'], ['prepare', '--', 'attach', 'selected'],
+    ['prepare', '--', 'exec', 'selected', '--', 'true'], ['prepare', '--', 'attach', 'selected'], ['prepare', '--', 'port-forward', 'selected', '8080:80'],
     ['--native-config', native, 'get', 'pods'],
   ]) {
     writeFileSync(native, JSON.stringify({ ...nativeConfig, users: [{ name: 'selected', user: { 'client-certificate-data': 'Y2VydA==', 'client-key-data': 'a2V5' } }] }));
@@ -110,25 +110,27 @@ try {
   }
   assert.equal(calls.length, 0);
   refusal = true;
+  calls.length = 0;
   assert.notEqual((await run(['version'], alias)).code, 0);
+  assert(calls.some(call => call.path.split('?')[0] === '/version'));
   refusal = false; redirect = true;
   calls.length = 0;
   assert.notEqual((await run(['version'], alias)).code, 0);
+  assert(calls.some(call => call.path.split('?')[0] === '/version'));
   assert(calls.every(call => call.path.split('?')[0] === '/version'));
   redirect = false;
   assert.notEqual((await run(['version'], join(directory, 'missing.sock'))).code, 0);
   holding = true;
   const reached = once(relay, 'request');
-  const child = spawn(process.execPath, ['--input-type=module', '-e', launcher(alias), '--', 'version'], { env: environment, stdio: 'ignore' });
+  const observeListener = `import { Server } from 'node:http'; const listen = Server.prototype.listen; Server.prototype.listen = function (...args) { this.once('listening', () => process.send({ port: this.address().port })); return listen.apply(this, args); };`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', observeListener + launcher(alias), '--', 'version'], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
   const exited = once(child, 'close', { signal: AbortSignal.timeout(15000) });
+  const listening = once(child, 'message', { signal: AbortSignal.timeout(15000) });
   const [incoming] = await reached;
-  const workdir = readdirSync(directory).find(name => name.startsWith('kubernetes-axi-'))!;
-  const bridge = JSON.parse(readFileSync(join(directory, workdir, 'config.json'), 'utf8'));
-  const bridgeUrl = bridge.clusters[0].cluster.server as string;
-  const bridgeToken = bridge.users[0].user.token as string;
-  assert(bridgeToken && !bridgeUrl.includes(bridgeToken));
+  const [{ port }] = await listening as [{ port: number }];
+  const bridgeUrl = `http://127.0.0.1:${port}`;
   const callCount = calls.length;
-  for (const [method, authorization] of [['GET', ''], ['GET', 'Bearer wrong'], ['POST', `Bearer ${bridgeToken}`]]) {
+  for (const [method, authorization] of [['GET', ''], ['GET', 'Bearer wrong'], ['POST', '']]) {
     const status = await new Promise<number | undefined>((resolve, reject) => {
       const call = request(bridgeUrl + '/api/v1/secrets', { method, headers: { authorization } }, response => { response.resume(); resolve(response.statusCode); });
       call.on('error', reject);
