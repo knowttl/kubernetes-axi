@@ -267,6 +267,26 @@ With no environment fields or selection, the file's `defaultProfile` is used, or
 A file profile that omits its token or private key reference reads `KUBERNETES_AXI_TOKEN` or `KUBERNETES_AXI_PRIVATE_KEY`.
 Insecure or redirected paths fail before credentials are read.
 
+### Host transport
+
+Embedding hosts can import `main` from `@knowttl/kubernetes-axi/dist/cli.js` and call `await main(args, { transport: { socketPath: '/absolute/private/relay.sock' } })`.
+The lower-level `readCluster` export accepts the same transport setting as its fifth argument.
+There is no environment variable, profile field or CLI flag for this host-owned setting.
+Without it, connections retain their existing behavior.
+
+The host must own and protect the Unix socket and enforce upstream HTTPS trust and certificate pins.
+The socket accepts ordinary HTTP requests with origin-form paths and the original cluster `Host` header, including its port.
+Static bearer tokens are sent through that socket.
+The host must scope its upstream trust to that original endpoint.
+kubectl reads use a temporary capability-protected loopback HTTP bridge to the socket; workflow HTTPS requests use it directly.
+Redirects from the read bridge are refused so kubectl cannot leave the relay.
+Original cluster URLs, CA trust and identity remain the inputs to preparation and confirmation binding; relay addresses never enter those digests.
+
+With host transport enabled, client-certificate identities, credential helpers and native TLS server-name overrides fail with `HOST_TRANSPORT_UNAVAILABLE`.
+Hosted byte sessions and upgrade operations (`exec`, `attach`, `port-forward`) also fail explicitly because this relay contract cannot carry them.
+Hosts launching the IPC session worker must pass the setting in the message's `transport` field; the worker refuses it before starting a session.
+These refusals never fall back to a direct cluster connection.
+
 ## Output and exit codes
 
 - Output is TOON by default; `--json` serializes the same approved fields, including structured help and errors.

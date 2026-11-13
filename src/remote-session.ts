@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
-import { request } from 'node:https';
+import { ClusterTransport } from './transport.js';
 import type { Duplex } from 'node:stream';
 import { Failure } from './errors.js';
 
@@ -11,7 +11,8 @@ export interface RemoteConfig {
 }
 
 // Only the frozen pod and command can be reached, with credentials held by the parent.
-export async function remoteSession(config: RemoteConfig, namespace: string, target: string, route: string, query: string, signal: AbortSignal): Promise<{ config: object; close: () => Promise<void> }> {
+export async function remoteSession(config: RemoteConfig, namespace: string, target: string, route: string, query: string, signal: AbortSignal, transport = new ClusterTransport()): Promise<{ config: object; close: () => Promise<void> }> {
+  transport.refuseSession();
   const cluster = config.clusters[0]!.cluster;
   const user = config.users[0]!.user;
   if (user.exec) throw new Failure('CAPABILITY_UNAVAILABLE', 'Helper-backed execution requires a reviewed containment boundary.');
@@ -28,7 +29,7 @@ export async function remoteSession(config: RemoteConfig, namespace: string, tar
     }
     sockets.add(downstream);
     downstream.once('close', () => sockets.delete(downstream));
-    const call = request(cluster.server.replace(/\/$/, '') + route + url.search, {
+    const call = transport.request(cluster.server.replace(/\/$/, '') + route + url.search, {
       method: incoming.method, signal, ca: Buffer.from(cluster['certificate-authority-data'], 'base64'),
       ...(cluster['tls-server-name'] ? { servername: cluster['tls-server-name'] } : {}),
       ...(user['client-certificate-data'] ? { cert: Buffer.from(user['client-certificate-data'], 'base64') } : {}),
@@ -71,7 +72,7 @@ export async function remoteSession(config: RemoteConfig, namespace: string, tar
     const pathname = path.split('?')[0]!;
     const discovery = /^\/(?:api(?:\/v[0-9]+)?|apis(?:\/[a-z0-9.-]+\/v[0-9]+(?:(?:alpha|beta)[0-9]+)?)?)$/.test(pathname);
     if (incoming.method !== 'GET' || !(pathname === target || discovery)) { response.writeHead(403).end(); return; }
-    const call = request(cluster.server.replace(/\/$/, '') + path, {
+    const call = transport.request(cluster.server.replace(/\/$/, '') + path, {
       ca: Buffer.from(cluster['certificate-authority-data'], 'base64'), signal,
       ...(cluster['tls-server-name'] ? { servername: cluster['tls-server-name'] } : {}),
       ...(user['client-certificate-data'] ? { cert: Buffer.from(user['client-certificate-data'], 'base64') } : {}),

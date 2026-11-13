@@ -9,6 +9,7 @@ import { Redactor } from './redaction.js';
 import { preview } from './mutations.js';
 import { nativeConfigPaths } from './native.js';
 import { readFile } from 'node:fs/promises';
+import type { HostTransport } from './transport.js';
 
 const help = {
   description: guidance,
@@ -17,7 +18,7 @@ const help = {
   examples: ['kubernetes-axi version --profile <name>', 'kubernetes-axi get pods --profile <name> --namespace <namespace>'],
 };
 
-export async function main(args: string[]): Promise<void> {
+export async function main(args: string[], host: { transport?: HostTransport } = {}): Promise<void> {
   const redactor = new Redactor();
   let native = false;
   const separator = args.indexOf('--');
@@ -58,7 +59,7 @@ export async function main(args: string[]): Promise<void> {
       output({ source: selected.source, origin: selected.profile.origin, auth: selected.profile.auth, secretSource: selected.profile.token ?? selected.profile.privateKey ?? { env: `KUBERNETES_AXI_${selected.profile.auth === 'token' ? 'TOKEN' : 'PRIVATE_KEY'}` }, permissions: 'verified', connectivity: 'not checked' });
       return;
     }
-    output(await readCluster(selected, invocation, redactor));
+    output(await readCluster(selected, invocation, redactor, undefined, host.transport));
   } catch (error) {
     const failure = error instanceof Failure ? error : new Failure('CONFIG_INVALID', 'Check the selected profile, protected files and installed package.');
     output({ error: { code: failure.code, message: failure.message, ...failure.details }, ...(native ? { native: false } : {}) });

@@ -10,10 +10,12 @@ import { preview } from './mutations.js';
 import { Redactor } from './redaction.js';
 import { readCluster, type NativeOutput } from './runner.js';
 import { readWorkspaceTar, relativeFile, workspaceTar } from './workspace-tar.js';
+import { ClusterTransport, type HostTransport } from './transport.js';
 
-interface Message { action: 'start' | 'confirm'; args?: string[]; digest?: string; stdinBase64?: string; inputFile?: 'stdin.bin'; timeoutMs?: number }
+interface Message { action: 'start' | 'confirm'; args?: string[]; digest?: string; stdinBase64?: string; inputFile?: 'stdin.bin'; timeoutMs?: number; transport?: HostTransport }
 const valid = new Ajv().compile<Message>({ type: 'object', additionalProperties: false, required: ['action'], properties: {
   action: { enum: ['start', 'confirm'] },
+  transport: { type: 'object', additionalProperties: false, required: ['socketPath'], properties: { socketPath: { type: 'string' } } },
   args: { type: 'array', maxItems: 256, items: { type: 'string', maxLength: 8192 } },
   digest: { type: 'string', pattern: '^[a-f0-9]{64}$' },
   stdinBase64: { type: 'string', maxLength: 4 * Math.ceil(100 * 1024 * 1024 / 3), pattern: '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$' },
@@ -95,6 +97,7 @@ process.on('SIGINT', () => { controller.abort(); });
 process.on('message', (raw: unknown) => {
   void (async () => {
     if (!valid(raw)) throw new Failure('USAGE', 'The session message is invalid.', 2);
+    new ClusterTransport(raw.transport).refuseSession();
     if (busy) throw new Failure('USAGE', 'Wait for the current session operation.', 2);
     busy = true;
     if (raw.action === 'start') {
