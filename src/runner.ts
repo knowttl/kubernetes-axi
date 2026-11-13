@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Ajv } from 'ajv';
 import type { Identity } from './credentials.js';
+import { identityBinding } from './identity-binding.js';
 import type { Invocation } from './grammar.js';
 import { Failure } from './errors.js';
 import { privateDirectory, writePrivate } from './private-files.js';
@@ -186,7 +187,8 @@ export async function readCluster(identity: Identity | undefined, invocation: In
   const raw = (path: string): Promise<unknown> => invoke(['get', `--raw=${path}`]);
   let close = async (): Promise<void> => {};
   let source = identity?.source ?? '';
-  let binding = JSON.stringify(identity);
+  let binding = identityBinding({ origin: profile?.origin, certificateAuthority: profile?.certificateAuthority }, user,
+    { auth: profile?.auth, namespace: profile?.namespace ?? 'default' });
   try {
     if (clientOnly(invocation)) {
       if (invocation.command.path === 'plugin list') env.PATH = process.env.PATH;

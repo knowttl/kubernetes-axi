@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, fork, spawn } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
@@ -21,7 +22,7 @@ const nativeConfig = { apiVersion: 'v1', kind: 'Config', clusters: [{ name: 'sel
   users: [{ name: 'selected', user: { token: 'synthetic-token' } }], contexts: [{ name: 'selected', context: { cluster: 'selected', user: 'selected' } }], 'current-context': 'selected' };
 writeFileSync(native, JSON.stringify(nativeConfig), { mode: 0o600 });
 const environment = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('KUBERNETES_AXI_'))),
-  KUBERNETES_AXI_CONFIG: config, SYNTHETIC_TOKEN: 'synthetic-token', KUBERNETES_AXI_READ_ONLY: 'false', TMPDIR: directory };
+  KUBERNETES_AXI_CONFIG: config, SYNTHETIC_TOKEN: 'synthetic-token', SAME_TOKEN: 'synthetic-token', OTHER_TOKEN: 'different-token', KUBERNETES_AXI_READ_ONLY: 'false', TMPDIR: directory, XDG_CONFIG_HOME: directory };
 const calls: { method: string; path: string; host: string; authorization: string; proxyAuthorization: string | undefined }[] = [];
 let refusal = false;
 let redirect = false;
@@ -120,6 +121,62 @@ try {
   calls.length = 0;
   assert.equal((decode((await run(['confirm', second.request, '--digest', secondPreview.digest], alias)).stdout) as any).error.code, 'PREVIEW_MISMATCH');
   assert.equal(calls.length, 0);
+  writeFileSync(native, JSON.stringify(nativeConfig));
+  const nativeArgs = ['--native-config', native];
+  const nativePrepared = await output([...nativeArgs, 'prepare', '--', 'create', 'configmap', 'legacy-binding', '-n', 'synthetic-b3', '--from-literal=value=legacy'], alias);
+  const requestDirectory = join(directory, 'kubernetes-axi', 'requests', nativePrepared.request);
+  const requestFile = join(requestDirectory, 'request.json');
+  const savedNative = JSON.parse(readFileSync(requestFile, 'utf8'));
+  const signingKey = readFileSync(join(requestDirectory, 'key'), 'utf8');
+  const legacyBinding = '{"cluster":{"server":"https://cluster.invalid:6443/prefix","certificate-authority-data":"c3ludGhldGljLWNh"},"user":{"token":"synthetic-token"},"auth":"token","context":"selected","namespace":"default"}';
+  savedNative.plan.binding = createHmac('sha256', signingKey).update(JSON.stringify(legacyBinding)).digest('hex');
+  savedNative.digest = createHmac('sha256', signingKey).update(JSON.stringify(savedNative.plan)).digest('hex');
+  writeFileSync(requestFile, JSON.stringify(savedNative));
+  const nativePreview = await output([...nativeArgs, 'preview', nativePrepared.request], alias);
+  calls.length = 0;
+  const nativeConfirmed = await output([...nativeArgs, 'confirm', nativePrepared.request, '--digest', nativePreview.digest], alias);
+  assert.equal(nativeConfirmed.state, 'complete');
+  assert(calls.some(call => call.method === 'POST' && call.path.startsWith('/prefix/api/v1/namespaces/synthetic-b3/configmaps')));
+  writeFileSync(config, JSON.stringify({ version: 1, profiles: { selected: profile } }));
+  const firstKey = join(directory, 'first.key');
+  const secondKey = join(directory, 'second.key');
+  const changedKey = join(directory, 'changed.key');
+  writeFileSync(firstKey, 'synthetic-private-key', { mode: 0o600 });
+  writeFileSync(secondKey, 'synthetic-private-key', { mode: 0o600 });
+  writeFileSync(changedKey, 'different-private-key', { mode: 0o600 });
+  const certificateProfile = { origin, auth: 'certificate', certificateAuthority: 'synthetic-ca', clientCertificate: 'synthetic-certificate', privateKey: { file: firstKey } };
+  for (const [name, initial, changed, matches] of [
+    ['different-path', certificateProfile, { ...certificateProfile, privateKey: { file: secondKey } }, true],
+    ['different-key', certificateProfile, { ...certificateProfile, privateKey: { file: changedKey } }, false],
+    ['different-certificate', certificateProfile, { ...certificateProfile, clientCertificate: 'different-certificate' }, false],
+    ['different-origin', certificateProfile, { ...certificateProfile, origin: 'https://different.invalid:6443' }, false],
+    ['different-ca', certificateProfile, { ...certificateProfile, certificateAuthority: 'different-ca' }, false],
+    ['different-type', certificateProfile, profile, false],
+    ['same-token', profile, profile, true],
+    ['different-token', profile, { ...profile, token: { env: 'OTHER_TOKEN' } }, false],
+    ['different-token-ref', profile, { ...profile, token: { env: 'SAME_TOKEN' } }, true],
+  ] as const) {
+    declaration = { endpoint: origin, capabilities: { clientCertificate: true } };
+    writeFileSync(config, JSON.stringify({ version: 1, profiles: { selected: initial } }));
+    const prepared = await output(['prepare', '--', 'create', 'configmap', name, '-n', 'synthetic-b3', '--from-literal=value=binding'], alias);
+    writeFileSync(config, JSON.stringify({ version: 1, profiles: { selected: changed } }));
+    declaration = { endpoint: changed.origin, capabilities: { clientCertificate: true } };
+    const preview = await output(['preview', prepared.request], alias);
+    calls.length = 0;
+    const result = await run(['confirm', prepared.request, '--digest', preview.digest], alias);
+    const value = decode(result.stdout) as any;
+    if (matches) {
+      assert.equal(result.code, 0, name + ': ' + result.stdout + result.stderr);
+      assert.equal(value.state, 'complete', name);
+      assert(calls.some(call => call.method === 'POST'), name);
+    } else {
+      assert.equal(value.error.code, 'PREVIEW_MISMATCH', name);
+      assert.equal(calls.length, 0, name);
+    }
+    const saved = readFileSync(join(directory, 'requests', prepared.request, 'request.json'), 'utf8');
+    assert(!saved.includes('synthetic-private-key') && !saved.includes('different-private-key'), name);
+  }
+  declaration = {};
   writeFileSync(config, JSON.stringify({ version: 1, profiles: { selected: profile } }));
   for (const args of [
     ['prepare', '--', 'exec', 'selected', '--', 'true'], ['prepare', '--', 'attach', 'selected'],

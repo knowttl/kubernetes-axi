@@ -39,6 +39,11 @@ const validDocument = new Ajv().compile<Document>({ type: 'object', properties: 
 } });
 const root = (config?: string): string => join(dirname(configPath(config)), 'requests');
 const mac = (key: string, value: unknown): string => createHmac('sha256', key).update(JSON.stringify(value)).digest('hex');
+function equalDigest(actual: string, expected: string): boolean {
+  const supplied = Buffer.from(actual);
+  const required = Buffer.from(expected);
+  return supplied.length === required.length && timingSafeEqual(supplied, required);
+}
 function prefix(invocation: Invocation): string {
   const selectors = [['--config', invocation.config], ['--profile', invocation.profile], ['--native-config', invocation.nativeConfig]];
   return 'kubernetes-axi' + selectors.filter(([, value]) => value !== undefined).map(([flag, value]) => ` ${flag} '${value!.replaceAll("'", "'\\''")}'`).join('') + (invocation.trustExec ? ' --trust-exec' : '');
@@ -59,7 +64,7 @@ async function savedRequest(invocation: Invocation): Promise<{ saved: Saved; dir
     throw error;
   }
   const digest = mac(signingKey, value.plan);
-  if (value.plan.version !== 1 || value.plan.key !== workflow.key || typeof value.digest !== 'string' || value.digest.length !== digest.length || !timingSafeEqual(Buffer.from(value.digest), Buffer.from(digest))) throw new Failure('PREVIEW_INVALID', 'The saved request was changed; prepare a new request.');
+  if (value.plan.version !== 1 || value.plan.key !== workflow.key || typeof value.digest !== 'string' || !equalDigest(value.digest, digest)) throw new Failure('PREVIEW_INVALID', 'The saved request was changed; prepare a new request.');
   if (value.plan.execution?.terminal) throw new Failure('LOCAL_TERMINAL_REQUIRED', executionLimit);
   return { saved: value, directory, signingKey };
 }
@@ -109,7 +114,7 @@ function operation(method: string, path: string): string {
   return method === 'POST' ? 'OP-012' : method === 'PUT' ? 'OP-013' : method === 'PATCH' ? 'OP-014' : 'OP-015';
 }
 
-export async function mutationSession(configFile: string, invocation: Invocation, namespace: string, redactor: Redactor, signal: AbortSignal, compatibleVersion: (value: unknown) => void, nativeBinding?: string, transport = new ClusterTransport()): Promise<{
+export async function mutationSession(configFile: string, invocation: Invocation, namespace: string, redactor: Redactor, signal: AbortSignal, compatibleVersion: (value: unknown) => void, identityBinding: string, transport = new ClusterTransport()): Promise<{
   config: object; argv?: string[]; rawPath?: string; prepared?: boolean; finish: (success?: boolean, exitCode?: number, stderr?: string) => Promise<object>; close: () => Promise<void>;
 }> {
   const config = JSON.parse(await readFile(configFile, 'utf8')) as Config;
@@ -170,8 +175,8 @@ export async function mutationSession(configFile: string, invocation: Invocation
     if (saved.plan.execution) transport.refuseSession();
     credentialIssuance = saved.plan.changes.some(change => change.operation === 'OP-030');
     if ((saved.plan.changes.some(change => change.operation === 'OP-016') || saved.plan.changes.filter(change => change.method === 'DELETE').length > 1) && !/^(true|1)$/i.test(process.env.KUBERNETES_AXI_COLLECTION_DELETE ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.');
-    const binding = mac(signingKey, nativeBinding ?? config);
-    if (saved.digest !== workflow.digest || saved.plan.binding !== binding) throw new Failure('PREVIEW_MISMATCH', 'Select the original cluster and identity and supply the exact preview digest.');
+    const binding = mac(signingKey, identityBinding);
+    if (!equalDigest(saved.digest, workflow.digest) || !equalDigest(saved.plan.binding, binding)) throw new Failure('PREVIEW_MISMATCH', 'Select the original cluster and identity and supply the exact preview digest.');
     if (saved.plan.changes.some(change => change.operation === 'OP-030')) {
       if (!/^(true|1)$/i.test(process.env.KUBERNETES_AXI_ACQUIRE_CREDENTIAL ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Token issuance requires KUBERNETES_AXI_ACQUIRE_CREDENTIAL=true.');
       const fd = invocation.credentialFd;
@@ -450,7 +455,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
       await privateDirectory(directory);
       const signingKey = randomBytes(32).toString('hex');
       const display = redactor.value({ command: invocation.command.path, namespace, selected: [...snapshots.values()], changes: changes.map(change => ({ operation: change.operation, method: change.method, path: change.path, change: publicBody(change.body, /\/secrets(?:\/|\?|$)/.test(change.path)) })), ...(execution ? { execution } : {}) }) as object;
-      const plan: Plan = { version: 1, key, binding: mac(signingKey, nativeBinding ?? config), namespace, command: invocation.command.path,
+      const plan: Plan = { version: 1, key, binding: mac(signingKey, identityBinding), namespace, command: invocation.command.path,
         ...(invocation.nativeConfig && config['current-context'] !== undefined ? { nativeContext: config['current-context'] } : {}),
         awaitDeletion: invocation.command.path === 'drain' || invocation.command.path === 'delete' && invocation.flags.get('wait') !== 'false', snapshots: [...snapshots.values()], changes, display, ...(execution ? { execution } : {}) };
       const saved: Saved = { plan, digest: mac(signingKey, plan), state: 'prepared', results: [] };
