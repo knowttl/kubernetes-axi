@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
 import { mutationFixture } from './b3.ts';
+import type { HostTransport } from '../src/transport.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'kubernetes-axi-transport-'));
 const origin = 'https://cluster.invalid:6443';
@@ -39,7 +40,8 @@ const relay = createServer((incoming, response) => {
 });
 await new Promise<void>(resolve => relay.listen(socketPath, resolve));
 const execute = promisify(execFile);
-const launcher = (socket: string): string => `import { main } from ${JSON.stringify(new URL('../dist/cli.js', import.meta.url).href)}; await main(process.argv.slice(1), {transport:{socketPath:${JSON.stringify(socket)}}});`;
+let declaration: Omit<HostTransport, 'socketPath'> = {};
+const launcher = (socket: string): string => `import { main } from ${JSON.stringify(new URL('../dist/cli.js', import.meta.url).href)}; await main(process.argv.slice(1), {transport:${JSON.stringify({ socketPath: socket, ...declaration })}});`;
 const run = async (args: string[], socket = socketPath): Promise<{ code: number; stdout: string; stderr: string }> => {
   try { return { code: 0, ...await execute(process.execPath, ['--input-type=module', '-e', launcher(socket), '--', ...args], { env: { ...environment, ...(args.includes('--native-config') ? { KUBERNETES_AXI_CONFIG: undefined } : {}) }, timeout: 20000 }) }; }
   catch (error) { const failed = error as { code: number; stdout: string; stderr: string }; return { code: failed.code, stdout: failed.stdout, stderr: failed.stderr }; }
@@ -50,23 +52,56 @@ const output = async (args: string[], socket?: string): Promise<any> => {
   return decode(result.stdout);
 };
 try {
+  let routeCases = 0;
   for (const [name, args, expected] of [
     ['version', ['version'], '/version'],
     ['compact kubectl', ['get', 'configmaps', '-n', 'synthetic-b3'], '/api/v1/namespaces/synthetic-b3/configmaps'],
     ['native kubectl', ['native', '--', 'get', '--raw=/api/v1'], '/api/v1'],
     ['native raw separate', ['native', '--', 'get', '--raw', '/api/v1'], '/api/v1'],
-    ['native prefix', ['--native-config', native, 'native', '--', 'get', '--raw=/api/v1'], '/prefix/api/v1'],
-    ['native prefix raw separate', ['--native-config', native, 'native', '--', 'get', '--raw', '/api/v1'], '/prefix/api/v1'],
     ['workflow review', ['auth', 'can-i', 'get', 'configmaps'], '/apis/authorization.k8s.io/v1/selfsubjectaccessreviews'],
-    ['native workflow prefix', ['--native-config', native, 'auth', 'can-i', 'get', 'configmaps'], '/prefix/apis/authorization.k8s.io/v1/selfsubjectaccessreviews'],
     ['workflow dry-run', ['server-dry-run', '--', 'create', 'configmap', 'absent', '-n', 'synthetic-b3', '--from-literal=value=dry'], '/api/v1/namespaces/synthetic-b3/configmaps'],
   ] as const) {
-    calls.length = 0;
-    const result = await run([...args]);
-    assert.equal(result.code, 0, name + ': ' + result.stdout + result.stderr);
-    assert(calls.some(call => call.path.split('?')[0] === expected), name + ': ' + JSON.stringify(calls));
-    assert(calls.every(call => call.host === 'cluster.invalid:6443' && call.authorization === 'Bearer synthetic-token' && call.proxyAuthorization === undefined), name);
+    for (const identity of ['token', 'certificate', 'native-token', 'native-certificate', 'exec'] as const)
+    for (const clientCertificate of [false, true]) for (const serverName of [false, true])
+    for (const override of [false, true]) {
+      if (override && !identity.startsWith('native') && identity !== 'exec') continue;
+      declaration = { endpoint: origin, capabilities: { clientCertificate, serverName }, serverName: 'override.invalid' };
+      const certificateProfile = { origin, auth: 'certificate', certificateAuthority: 'synthetic-ca', clientCertificate: 'synthetic-certificate', privateKey: { env: 'SYNTHETIC_TOKEN' } };
+      writeFileSync(config, JSON.stringify({ version: 1, profiles: { selected: identity === 'certificate' ? certificateProfile : profile } }));
+      const selectedNative = identity.startsWith('native') || identity === 'exec';
+      const user = identity === 'native-certificate' ? { 'client-certificate-data': 'Y2VydA==', 'client-key-data': 'a2V5' } : identity === 'exec'
+        ? { exec: { apiVersion: 'client.authentication.k8s.io/v1', command: '/never-execute', interactiveMode: 'Never' } } : { token: 'synthetic-token' };
+      writeFileSync(native, JSON.stringify({ ...nativeConfig, clusters: [{ name: 'selected', cluster: { ...nativeConfig.clusters[0]!.cluster, ...(override ? { 'tls-server-name': 'override.invalid' } : {}) } }], users: [{ name: 'selected', user }] }));
+      calls.length = 0;
+      const result = await run([...(selectedNative ? ['--native-config', native, '--trust-exec'] : []), ...args]);
+      routeCases++;
+      const label = [name, identity, clientCertificate, serverName, override].join(':');
+      const allowed = identity !== 'exec' && identity !== 'native-certificate' && (identity !== 'certificate' || clientCertificate) && (!override || serverName);
+      if (!allowed) {
+        const code = (decode(result.stdout) as any).error.code;
+        assert.equal(code, identity === 'exec' && name === 'workflow dry-run' ? 'AUTH_HELPER_MUTATION_UNAVAILABLE' : 'HOST_TRANSPORT_UNAVAILABLE', label + result.stdout);
+        assert.equal(calls.length, 0, label);
+        continue;
+      }
+      assert.equal(result.code, 0, label + ': ' + result.stdout + result.stderr);
+      assert(calls.some(call => call.path.split('?')[0] === (selectedNative ? '/prefix' : '') + expected), label + ': ' + JSON.stringify(calls));
+      assert(calls.every(call => call.host === 'cluster.invalid:6443' && call.authorization === (identity === 'certificate' ? undefined : 'Bearer synthetic-token') && call.proxyAuthorization === undefined), label);
+    }
   }
+  declaration = {};
+  writeFileSync(config, JSON.stringify({ version: 1, profiles: { selected: profile } }));
+  writeFileSync(native, JSON.stringify({ ...nativeConfig, clusters: [{ name: 'selected', cluster: { ...nativeConfig.clusters[0]!.cluster, 'tls-server-name': 'override.invalid' } }] }));
+  for (const invalid of [
+    { capabilities: { serverName: true }, serverName: 'override.invalid' },
+    { endpoint: 'https://different.invalid:6443', capabilities: { serverName: true }, serverName: 'override.invalid' },
+    { endpoint: origin, capabilities: { serverName: true }, serverName: 'wrong.invalid' },
+  ]) {
+    declaration = invalid;
+    calls.length = 0;
+    assert.equal((decode((await run(['--native-config', native, 'version'])).stdout) as any).error.code, 'HOST_TRANSPORT_UNAVAILABLE');
+    assert.equal(calls.length, 0);
+  }
+  declaration = {};
   const prepared = await output(['prepare', '--', 'create', 'configmap', 'absent', '-n', 'synthetic-b3', '--from-literal=value=relayed']);
   const preview = await output(['preview', prepared.request]);
   const stored = readFileSync(join(directory, 'requests', prepared.request, 'request.json'), 'utf8');
@@ -107,7 +142,7 @@ try {
     const worker = fork(new URL('../dist/hosted-session.js', import.meta.url), [], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
     const closed = once(worker, 'close');
     const failed = once(worker, 'message');
-    worker.send({ action: 'start', args, transport: { socketPath: alias } });
+    worker.send({ action: 'start', args, transport: { socketPath: alias, endpoint: origin, capabilities: { clientCertificate: true, serverName: true }, serverName: 'override.invalid' } });
     assert.equal((await failed)[0].code, 'HOST_TRANSPORT_UNAVAILABLE');
     await closed;
   }
@@ -177,9 +212,10 @@ try {
   await exited;
   await disconnected;
   for (const secret of secretForms) assert(!logs.includes(secret));
-  console.log('Host transport passed: route table, original identity, relay rotation, refusals and fail-closed reads');
+  console.log(`Host transport passed: ${routeCases} route cases, original identity, relay rotation, refusals and fail-closed reads`);
 } finally {
   relay.closeAllConnections();
   await new Promise<void>(resolve => relay.close(() => resolve()));
   rmSync(directory, { recursive: true, force: true });
 }
+await import('./transport-tls.ts');

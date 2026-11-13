@@ -87,7 +87,7 @@ const validGroups = ajv.compile<{ groups: { name: string; versions: { groupVersi
 export interface NativeOutput { native: true; stdout: string; stderr: string; exitCode: number }
 
 export async function readCluster(identity: Identity | undefined, invocation: Invocation, redactor: Redactor, byteExecution?: ByteExecution, hostTransport?: HostTransport): Promise<object | NativeOutput> {
-  const transport = new ClusterTransport(hostTransport);
+  const transport = new ClusterTransport(hostTransport, !invocation.nativeConfig && identity?.profile.auth === 'certificate');
   if (byteExecution || ['exec', 'attach', 'port-forward'].includes(invocation.command.path)) transport.refuseSession();
   const pin = pins.binaries[`${process.platform}-${process.arch}`];
   if (!pin) throw new Failure('BINARY_UNSUPPORTED', 'Use a recorded Linux or Windows amd64 runtime.');

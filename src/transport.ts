@@ -5,15 +5,21 @@ import { isAbsolute } from 'node:path';
 import { Failure } from './errors.js';
 import type { Redactor } from './redaction.js';
 
-export interface HostTransport { socketPath: string }
+export interface HostTransport {
+  socketPath: string;
+  endpoint?: string;
+  capabilities?: { clientCertificate?: boolean; serverName?: boolean };
+  serverName?: string;
+}
 export interface TransportConfig {
   clusters: { cluster: { server: string; 'tls-server-name'?: string } }[];
   users: { user: { token?: string; exec?: object; 'client-certificate-data'?: string; 'client-key-data'?: string } }[];
 }
 
 export class ClusterTransport {
-  constructor(private readonly host?: HostTransport) {
+  constructor(private readonly host?: HostTransport, private readonly managedCertificate = false) {
     if (host && (typeof host.socketPath !== 'string' || !isAbsolute(host.socketPath) || host.socketPath.includes('\0'))) throw new Failure('CONFIG_INVALID', 'Host transport requires an absolute Unix socket path.');
+    if (host?.endpoint !== undefined && (!URL.canParse(host.endpoint) || new URL(host.endpoint).protocol !== 'https:' || new URL(host.endpoint).href !== new URL(host.endpoint).origin + '/')) throw new Failure('CONFIG_INVALID', 'Host transport endpoint must be an HTTPS origin.');
   }
 
   refuseSession(): void {
@@ -23,8 +29,17 @@ export class ClusterTransport {
   validate(config: TransportConfig): void {
     if (!this.host) return;
     const user = config.users[0]!.user;
-    if (!user.token || user.exec || user['client-certificate-data'] || user['client-key-data'] || config.clusters[0]!.cluster['tls-server-name']) {
+    const cluster = config.clusters[0]!.cluster;
+    const certificate = Boolean(user['client-certificate-data'] || user['client-key-data']);
+    const supportsCertificate = this.host.capabilities?.clientCertificate === true && this.managedCertificate;
+    const supportsServerName = this.host.capabilities?.serverName === true && this.host.serverName === cluster['tls-server-name'];
+    if (user.exec || (certificate ? !supportsCertificate : !user.token) || (cluster['tls-server-name'] && !supportsServerName)) {
       throw new Failure('HOST_TRANSPORT_UNAVAILABLE', 'Host transport supports static tokens only; client certificates, credential helpers and TLS server-name overrides are unavailable.');
+    }
+    if (this.host.endpoint !== undefined || this.host.capabilities?.clientCertificate === true || this.host.capabilities?.serverName === true) {
+      if (!this.host.endpoint || new URL(this.host.endpoint).origin !== new URL(cluster.server).origin) {
+        throw new Failure('HOST_TRANSPORT_UNAVAILABLE', 'Host transport capabilities require the original cluster endpoint.');
+      }
     }
   }
 
@@ -32,6 +47,7 @@ export class ClusterTransport {
     if (!this.host) return httpsRequest(target, options, callback);
     const url = new URL(target);
     if (url.protocol !== 'https:') throw new Failure('CONFIG_INVALID', 'Host transport requires the original HTTPS cluster URL.');
+    if (this.host.endpoint && new URL(this.host.endpoint).origin !== url.origin) throw new Failure('HOST_TRANSPORT_UNAVAILABLE', 'Host transport capabilities require the original cluster endpoint.');
     return httpRequest({ socketPath: this.host.socketPath, path: url.pathname + url.search, method: options.method,
       signal: options.signal, agent: false, headers: { ...options.headers, host: url.host } }, callback);
   }
@@ -54,8 +70,10 @@ export class ClusterTransport {
       const target = new URL(cluster.server);
       target.pathname = path.split('?')[0]!;
       target.search = path.includes('?') ? path.slice(path.indexOf('?')) : '';
-      const headers = { ...incoming.headers, authorization: `Bearer ${config.users[0]!.user.token}` };
+      const headers = { ...incoming.headers };
       delete headers['proxy-authorization'];
+      delete headers.authorization;
+      if (config.users[0]!.user.token) headers.authorization = `Bearer ${config.users[0]!.user.token}`;
       const call = this.request(target, { signal, headers }, reply => {
         if (reply.statusCode && reply.statusCode >= 300 && reply.statusCode < 400) { reply.resume(); response.writeHead(502).end(); return; }
         response.writeHead(reply.statusCode ?? 502, reply.headers);
