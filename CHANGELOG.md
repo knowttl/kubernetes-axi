@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/knowttl/kubernetes-axi/compare/kubernetes-axi-v0.1.3...kubernetes-axi-v0.1.4) (2026-11-13)
+
+
+### Features
+
+* add explicit host relay transport for cluster requests ([#59](https://github.com/knowttl/kubernetes-axi/issues/59)) ([0db2adb](https://github.com/knowttl/kubernetes-axi/commit/0db2adbe840bcd7a3f5c2e30d8fbc529ca4fa6e7))
+
 ## [0.1.3](https://github.com/knowttl/kubernetes-axi/compare/kubernetes-axi-v0.1.2...kubernetes-axi-v0.1.3) (2026-11-02)
 
 
