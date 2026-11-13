@@ -2,14 +2,16 @@ import { readFileSync, chmodSync, mkdirSync, writeFileSync, rmSync } from 'node:
 import { createHash } from 'node:crypto';
 
 const root = new URL('../', import.meta.url);
-const pins = JSON.parse(readFileSync(new URL('kubectl-pins.json', root), 'utf8'));
+const pins = JSON.parse(readFileSync(new URL('kubectl-pins.json', root), 'utf8')) as {
+  binaries: Record<string, { file: string; url: string; sha256: string }>;
+};
 for (const pin of Object.values(pins.binaries)) {
   const path = new URL(`vendor/${pin.file}`, root);
-  let bytes;
+  let bytes: Buffer;
   let missing = false;
   try { bytes = readFileSync(path); }
   catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     missing = true;
     const response = await fetch(pin.url, { signal: AbortSignal.timeout(120_000) });
     if (!response.ok) throw new Error(`Pinned binary download failed: ${pin.file} (HTTP ${response.status})`);
