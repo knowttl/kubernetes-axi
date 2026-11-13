@@ -120,8 +120,9 @@ Generated grammar:
   The child gets a temporary loopback capability, not the upstream credentials.
 - `preview` reads only the saved snapshot and makes no API request.
   Its digest covers the cluster and identity binding, namespace, selected objects and the exact bytes to be forwarded.
-  Managed identity binding hashes the resolved credentials, original cluster origin, CA trust and authentication type; SecretRef file paths and environment variable names do not affect it.
-  This binding change invalidates managed requests prepared by earlier versions; prepare and preview those requests again before confirming. Native preparations remain compatible.
+  Managed identity binding hashes the resolved credentials, original cluster origin, CA trust, authentication type and default profile namespace; SecretRef file paths and environment variable names do not affect it.
+  This binding change invalidates managed requests prepared by earlier versions; prepare and preview those requests again before confirming.
+  Native preparations remain compatible.
   Secret payloads, last-applied configuration and configured credential values are redacted from the public preview.
   The private saved request under `requests/<request-key>` beside the config file retains the original payloads, including Secret data, so protect that directory.
 - `confirm` needs the exact digest and original identity, rechecks every target, uses UID and resourceVersion preconditions and claims the request atomically.
@@ -282,7 +283,7 @@ Static bearer tokens are sent through that socket.
 The host must scope its upstream trust to that original endpoint.
 kubectl reads use a temporary capability-protected loopback HTTP bridge to the socket; workflow HTTPS requests use it directly.
 Redirects from the read bridge are refused so kubectl cannot leave the relay.
-Original cluster URLs, CA trust and identity, including its authentication type, remain the inputs to preparation and confirmation binding; relay addresses never enter those digests.
+Relay addresses do not enter the preparation and confirmation binding described in [Safety](#safety).
 
 Hosts that preconfigure their relay for the selected managed client-certificate identity can pass `transport: { socketPath, endpoint: 'https://cluster.example:6443', capabilities: { clientCertificate: true } }`.
 The host already owns the certificate and private key and must install them in its relay's endpoint-scoped TLS options before invoking kubernetes-axi.
