@@ -16,6 +16,7 @@ import type { Redactor } from './redaction.js';
 import { mutationSession } from './mutations.js';
 import { byteProcess, type ByteExecution } from './byte-process.js';
 import { clientOnly, boundedRequestTimeout } from './grammar.js';
+import { ClusterTransport, type HostTransport, type TransportConfig } from './transport.js';
 
 const execute = promisify(execFile);
 const pins = JSON.parse(await readFile(new URL('../kubectl-pins.json', import.meta.url), 'utf8')) as {
@@ -85,7 +86,9 @@ const validGroups = ajv.compile<{ groups: { name: string; versions: { groupVersi
 });
 export interface NativeOutput { native: true; stdout: string; stderr: string; exitCode: number }
 
-export async function readCluster(identity: Identity | undefined, invocation: Invocation, redactor: Redactor, byteExecution?: ByteExecution): Promise<object | NativeOutput> {
+export async function readCluster(identity: Identity | undefined, invocation: Invocation, redactor: Redactor, byteExecution?: ByteExecution, hostTransport?: HostTransport): Promise<object | NativeOutput> {
+  const transport = new ClusterTransport(hostTransport);
+  if (byteExecution || ['exec', 'attach', 'port-forward'].includes(invocation.command.path)) transport.refuseSession();
   const pin = pins.binaries[`${process.platform}-${process.arch}`];
   if (!pin) throw new Failure('BINARY_UNSUPPORTED', 'Use a recorded Linux or Windows amd64 runtime.');
   const binary = await realpath(fileURLToPath(new URL(`../vendor/${pin.file}`, import.meta.url)));
@@ -212,10 +215,12 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       clusters: [{ name: 'selected', cluster: { server: profile!.origin, 'certificate-authority-data': Buffer.from(profile!.certificateAuthority).toString('base64') } }],
       users: [{ name: 'selected', user }], contexts: [{ name: 'selected', context: { cluster: 'selected', user: 'selected', namespace } }], 'current-context': 'selected',
     }));
+    const originalConfig = JSON.parse(await readFile(config, 'utf8')) as TransportConfig;
+    transport.validate(originalConfig);
     if (invocation.workflow || invocation.command.effect === 'authorization') {
       // Guarded workflows supply their own capability-prefixed raw URI.
       serverPrefix = '';
-      const session = await mutationSession(config, invocation, namespace, redactor, cancellation.signal, compatibleVersion, binding);
+      const session = await mutationSession(config, invocation, namespace, redactor, cancellation.signal, compatibleVersion, binding, transport);
       const closeIdentity = close;
       close = async () => { await session.close(); await closeIdentity(); };
       if (invocation.workflow?.kind === 'confirm' && !session.argv || session.prepared) return await session.finish();
@@ -250,6 +255,13 @@ export async function readCluster(identity: Identity | undefined, invocation: In
       }
       const finished = await session.finish();
       return finished;
+    }
+    const relayed = await transport.kubectl(originalConfig, cancellation.signal, redactor);
+    const closeIdentity = close;
+    close = async () => { await relayed.close(); await closeIdentity(); };
+    if (relayed.prefix !== undefined) {
+      serverPrefix = relayed.prefix;
+      await writePrivate(config, JSON.stringify(relayed.config));
     }
     const client = await invoke(['version', '--client=true', '-o', 'json']) as { clientVersion?: { gitVersion?: string } };
     if (client.clientVersion?.gitVersion !== pins.version) throw new Failure('BINARY_VERSION', 'Restore the recorded managed kubectl version.');

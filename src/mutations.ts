@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
-import { request } from 'node:https';
+import { ClusterTransport } from './transport.js';
 import { readFile, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -109,10 +109,11 @@ function operation(method: string, path: string): string {
   return method === 'POST' ? 'OP-012' : method === 'PUT' ? 'OP-013' : method === 'PATCH' ? 'OP-014' : 'OP-015';
 }
 
-export async function mutationSession(configFile: string, invocation: Invocation, namespace: string, redactor: Redactor, signal: AbortSignal, compatibleVersion: (value: unknown) => void, nativeBinding?: string): Promise<{
+export async function mutationSession(configFile: string, invocation: Invocation, namespace: string, redactor: Redactor, signal: AbortSignal, compatibleVersion: (value: unknown) => void, nativeBinding?: string, transport = new ClusterTransport()): Promise<{
   config: object; argv?: string[]; rawPath?: string; prepared?: boolean; finish: (success?: boolean, exitCode?: number, stderr?: string) => Promise<object>; close: () => Promise<void>;
 }> {
   const config = JSON.parse(await readFile(configFile, 'utf8')) as Config;
+  transport.validate(config);
   const cluster = config.clusters[0]!.cluster;
   const user = config.users[0]!.user;
   let count = 0;
@@ -138,7 +139,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
     redactor.register(token, cert, key);
     const payload = wire ?? (body === undefined ? undefined : JSON.stringify(body));
     return await new Promise<Reply>((resolve, reject) => {
-      const call = request(new URL(cluster.server.replace(/\/$/, '') + path), { method, ca: Buffer.from(cluster['certificate-authority-data'], 'base64'),
+      const call = transport.request(new URL(cluster.server.replace(/\/$/, '') + path), { method, ca: Buffer.from(cluster['certificate-authority-data'], 'base64'),
         ...(cluster['tls-server-name'] ? { servername: cluster['tls-server-name'] } : {}), ...(cert ? { cert } : {}), ...(key ? { key } : {}), signal,
         headers: { accept: 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(payload === undefined ? {} : { 'content-type': contentType, 'content-length': Buffer.byteLength(payload) }) },
       }, response => {
@@ -166,6 +167,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
   if (workflow?.kind === 'confirm') {
     requireWrites();
     const { saved, directory, signingKey } = await savedRequest(invocation);
+    if (saved.plan.execution) transport.refuseSession();
     credentialIssuance = saved.plan.changes.some(change => change.operation === 'OP-030');
     if ((saved.plan.changes.some(change => change.operation === 'OP-016') || saved.plan.changes.filter(change => change.method === 'DELETE').length > 1) && !/^(true|1)$/i.test(process.env.KUBERNETES_AXI_COLLECTION_DELETE ?? '')) throw new Failure('CAPABILITY_UNAVAILABLE', 'Bulk deletion also requires KUBERNETES_AXI_COLLECTION_DELETE=true.');
     const binding = mac(signingKey, nativeBinding ?? config);
@@ -211,7 +213,7 @@ export async function mutationSession(configFile: string, invocation: Invocation
     await persist();
     if (saved.plan.execution) {
       const execution = saved.plan.execution;
-      const session = await remoteSession(config, saved.plan.namespace, execution.target, execution.route, execution.query, signal);
+      const session = await remoteSession(config, saved.plan.namespace, execution.target, execution.route, execution.query, signal, transport);
       return { ...session, argv: execution.argv, finish: async (success = true, exitCode) => {
         saved.state = success ? 'complete' : 'failed';
         if (exitCode !== undefined) saved.exitCode = exitCode;
