@@ -75,7 +75,7 @@ try {
   assert.equal(hits, relayed);
   const review = await run(['auth', 'can-i', 'get', 'configmaps']);
   assert.equal(review.code, 0, review.stdout + review.stderr);
-  const prepared = await run(['prepare', '--', 'create', 'configmap', 'absent', '-n', 'synthetic-b3', '--from-literal=value=relay']);
+  const prepared = await run(['prepare', '--', 'create', 'configmap', 'mtls-relay', '-n', 'synthetic-b3', '--from-literal=value=relay']);
   assert.equal(prepared.code, 0, prepared.stdout + prepared.stderr);
   const saved = decode(prepared.stdout) as any;
   const preview = decode((await run(['preview', saved.request])).stdout) as any;
