@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFile, fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { decode } from '@toon-format/toon';
 import { mutationFixture } from './b3.ts';
-import { remoteSession } from '../dist/remote-session.js';
-import { ClusterTransport } from '../dist/transport.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'kubernetes-axi-transport-'));
 const origin = 'https://cluster.invalid:6443';
@@ -101,15 +99,14 @@ try {
     writeFileSync(native, JSON.stringify({ ...nativeConfig, clusters: [{ name: 'selected', cluster }], users: [{ name: 'selected', user }] }));
     assert.equal((decode((await run(['--native-config', native, '--trust-exec', 'get', 'pods'], alias)).stdout) as any).error.code, 'HOST_TRANSPORT_UNAVAILABLE');
   }
-  const worker = fork(new URL('../dist/hosted-session.js', import.meta.url), [], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
-  const closed = once(worker, 'close');
-  const failed = once(worker, 'message');
-  worker.send({ action: 'start', args: ['get', 'pods'], transport: { socketPath: alias } });
-  assert.equal((await failed)[0].code, 'HOST_TRANSPORT_UNAVAILABLE');
-  await closed;
   calls.length = 0;
-  for (const route of ['exec', 'attach', 'portforward']) {
-    await assert.rejects(remoteSession(nativeConfig, 'default', '/api/v1/pods/selected', `/api/v1/pods/selected/${route}`, '', new AbortController().signal, new ClusterTransport({ socketPath: alias })), { code: 'HOST_TRANSPORT_UNAVAILABLE' });
+  for (const args of [['prepare', '--', 'exec', 'selected', '--', 'true'], ['prepare', '--', 'attach', 'selected'], ['prepare', '--', 'port-forward', 'selected', '8080:80']]) {
+    const worker = fork(new URL('../dist/hosted-session.js', import.meta.url), [], { env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const closed = once(worker, 'close');
+    const failed = once(worker, 'message');
+    worker.send({ action: 'start', args, transport: { socketPath: alias } });
+    assert.equal((await failed)[0].code, 'HOST_TRANSPORT_UNAVAILABLE');
+    await closed;
   }
   assert.equal(calls.length, 0);
   refusal = true;
@@ -125,6 +122,22 @@ try {
   const child = spawn(process.execPath, ['--input-type=module', '-e', launcher(alias), '--', 'version'], { env: environment, stdio: 'ignore' });
   const exited = once(child, 'close', { signal: AbortSignal.timeout(15000) });
   const [incoming] = await reached;
+  const workdir = readdirSync(directory).find(name => name.startsWith('kubernetes-axi-'))!;
+  const bridge = JSON.parse(readFileSync(join(directory, workdir, 'config.json'), 'utf8'));
+  const bridgeUrl = bridge.clusters[0].cluster.server as string;
+  const bridgeToken = bridge.users[0].user.token as string;
+  assert(bridgeToken && !bridgeUrl.includes(bridgeToken));
+  const callCount = calls.length;
+  for (const [method, authorization] of [['GET', ''], ['GET', 'Bearer wrong'], ['POST', `Bearer ${bridgeToken}`]]) {
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const call = request(bridgeUrl + '/api/v1/secrets', { method, headers: { authorization } }, response => { response.resume(); resolve(response.statusCode); });
+      call.on('error', reject);
+      call.end();
+    });
+    assert.equal(status, 403);
+  }
+  assert.equal(calls.length, callCount);
+  assert.equal(calls.at(-1)!.authorization, 'Bearer synthetic-token');
   const disconnected = once(incoming.socket, 'close', { signal: AbortSignal.timeout(15000) });
   child.kill('SIGTERM');
   await exited;

@@ -42,8 +42,8 @@ export class ClusterTransport {
     const capability = randomBytes(32).toString('hex');
     const calls = new Set<ClientRequest>();
     const server = createServer((incoming, response) => {
-      if (incoming.method !== 'GET' || !incoming.url?.startsWith(`/${capability}/`)) { response.writeHead(403).end(); return; }
-      const path = incoming.url.slice(capability.length + 1);
+      if (incoming.method !== 'GET' || incoming.headers.authorization !== `Bearer ${capability}` || !incoming.url?.startsWith('/')) { response.writeHead(403).end(); return; }
+      const path = incoming.url;
       const target = new URL(cluster.server);
       target.pathname = path.split('?')[0]!;
       target.search = path.includes('?') ? path.slice(path.indexOf('?')) : '';
@@ -65,8 +65,8 @@ export class ClusterTransport {
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const address = server.address();
     if (!address || typeof address === 'string') throw new Failure('CONFIG_INVALID', 'Cannot establish the host transport bridge.');
-    const prefix = `/${capability}${new URL(cluster.server).pathname.replace(/\/$/, '')}`;
-    return { config: { ...config, clusters: [{ ...config.clusters[0], cluster: { server: `http://127.0.0.1:${address.port}${prefix}` } }], users: [{ ...config.users[0], user: {} }] }, prefix,
+    const prefix = new URL(cluster.server).pathname.replace(/\/$/, '');
+    return { config: { ...config, clusters: [{ ...config.clusters[0], cluster: { server: `http://127.0.0.1:${address.port}${prefix}` } }], users: [{ ...config.users[0], user: { token: capability } }] }, prefix,
       close: async () => {
         for (const call of calls) call.destroy();
         server.closeAllConnections();
